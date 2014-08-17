@@ -1634,4 +1634,8 @@ public class CoreContainer {
 	public String[] getActualCores() {
 		return actualCores;
 	}
+
+	public void setActualCores(String[] actualCores) {
+		this.actualCores = actualCores;
+	}
 }

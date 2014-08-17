@@ -27,6 +27,12 @@
 	  <groupId>org.apache.solr</groupId>
 	  <artifactId>solr-test-framework</artifactId>
 	  <version>${lucene.version}</version>
+	  <exclusions>
+	  	<exclusion>
+	  		<groupId>org.apache.solr</groupId>
+	  		<artifactId>solr-core</artifactId>
+	  	</exclusion>
+	  </exclusions>
 	</dependency>
     <dependency>
       <groupId>org.apache.lucene</groupId>
