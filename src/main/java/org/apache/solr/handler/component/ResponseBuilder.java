@@ -40,6 +40,7 @@ import org.apache.solr.search.DocListAndSet;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.search.SortSpec;
+import org.apache.solr.search.function.cf.FilterableCollector;
 import org.apache.solr.search.grouping.GroupingSpecification;
 import org.apache.solr.search.grouping.distributed.command.QueryCommandResult;
 import org.apache.solr.util.RTimer;
@@ -72,6 +73,7 @@ public class ResponseBuilder {
 	private GroupingSpecification groupingSpec;
 	//used for handling deep paging
 	private ScoreDoc scoreDoc;
+	private List<FilterableCollector> filterCollectors;
 
 	/** small 与 big 的搜索合并优化 */
 	public boolean useOptMerge = false;
@@ -380,8 +382,15 @@ public class ResponseBuilder {
 	 */
 	public SolrIndexSearcher.QueryCommand getQueryCommand() {
 		SolrIndexSearcher.QueryCommand cmd = new SolrIndexSearcher.QueryCommand();
-		cmd.setQuery(getQuery()).setFilterList(getFilters()).setSort(getSortSpec().getSort()).setOffset(getSortSpec().getOffset()).setLen(getSortSpec().getCount()).setFlags(getFieldFlags())
-				.setNeedDocSet(isNeedDocSet()).setScoreDoc(getScoreDoc()); //Issue 1726
+		cmd.setQuery(getQuery())
+		.setFilterList(getFilters())
+		.setSort(getSortSpec().getSort())
+		.setOffset(getSortSpec().getOffset())
+		.setLen(getSortSpec().getCount())
+		.setFlags(getFieldFlags())
+		.setNeedDocSet(isNeedDocSet())
+		.setFilterCollectors(getFilterCollectors())
+		.setScoreDoc(getScoreDoc()); //Issue 1726
 		return cmd;
 	}
 
@@ -415,5 +424,20 @@ public class ResponseBuilder {
 	 */
 	public SolrRequestInfo getRequestInfo() {
 		return requestInfo;
+	}
+
+	public List<FilterableCollector> getFilterCollectors() {
+		return filterCollectors;
+	}
+
+	public void setFilterCollectors(List<FilterableCollector> filterCollectors) {
+		this.filterCollectors = filterCollectors;
+	}
+
+	public void addFilterCollectors(FilterableCollector filterCollector) {
+		if(filterCollectors == null) {
+			filterCollectors = new ArrayList<FilterableCollector>();
+		}
+		filterCollectors.add(filterCollector);
 	}
 }
