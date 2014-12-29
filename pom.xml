@@ -19,10 +19,15 @@
 	
   <dependencies>
 	<dependency>
+	  <groupId>com.netboy.netty</groupId>
+	  <artifactId>netty-tool</artifactId>
+	  <version>0.0.1-SNAPSHOT</version>
+	</dependency>
+<!-- 	<dependency>
 	  <groupId>org.apache.solr</groupId>
 	  <artifactId>solr-solrj</artifactId>
 	  <version>${lucene.version}</version>
-	</dependency>
+	</dependency> -->
 	<dependency>
 	  <groupId>org.apache.solr</groupId>
 	  <artifactId>solr-test-framework</artifactId>

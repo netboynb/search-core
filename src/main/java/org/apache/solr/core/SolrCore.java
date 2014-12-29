@@ -121,7 +121,6 @@ import org.apache.solr.util.plugin.SolrCoreAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.SAXException;
-
 /**
  *
  */
@@ -2238,6 +2237,49 @@ public final class SolrCore implements SolrInfoMBean {
 		@Override
 		public String getContentType(SolrQueryRequest request, SolrQueryResponse response) {
 			return getWrappedWriter().getContentType(request, response);
+		}
+	}
+	public static void setResponseHeaderValues(SolrRequestHandler handler,
+			SolrQueryRequest req, SolrQueryResponse rsp) {
+		// TODO should check that responseHeader has not been replaced by
+		// handler
+		NamedList responseHeader = rsp.getResponseHeader();
+		final int qtime = (int) (rsp.getEndTime() - req.getStartTime());
+		int status = 0;
+		Exception exception = rsp.getException();
+		if (exception != null) {
+			if (exception instanceof SolrException)
+				status = ((SolrException) exception).code();
+			else
+				status = 500;
+		}
+		responseHeader.add("status", status);
+		responseHeader.add("QTime", qtime);
+		rsp.getToLog().add("status", status);
+		rsp.getToLog().add("QTime", qtime);
+
+		SolrParams params = req.getParams();
+		if (params.getBool(CommonParams.HEADER_ECHO_HANDLER, false)) {
+			responseHeader.add("handler", handler.getName());
+		}
+
+		// Values for echoParams... false/true/all or false/explicit/all ???
+		String ep = params.get(CommonParams.HEADER_ECHO_PARAMS, null);
+		if (ep != null) {
+			EchoParamStyle echoParams = EchoParamStyle.get(ep);
+			if (echoParams == null) {
+				throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+						"Invalid value '" + ep + "' for "
+								+ CommonParams.HEADER_ECHO_PARAMS
+								+ " parameter, use '" + EchoParamStyle.EXPLICIT
+								+ "' or '" + EchoParamStyle.ALL + "'");
+			}
+			if (echoParams == EchoParamStyle.EXPLICIT) {
+				responseHeader.add("params", req.getOriginalParams()
+						.toNamedList());
+			} else if (echoParams == EchoParamStyle.ALL) {
+				responseHeader.add("params", req.getParams().toNamedList());
+			}
 		}
 	}
 }

@@ -42,6 +42,7 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.schema.FieldType;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -68,7 +69,19 @@ public class QueryParsing {
   // true if the value was specified by the "v" param (i.e. v=myval, or v=$param)
   public static final String VAL_EXPLICIT = "__VAL_EXPLICIT__";
 
-
+  public static String sortFieldToString(SortField ...sortFields) {
+	  StringBuilder sb = new StringBuilder();
+	  for(SortField sf : sortFields) {
+		  sb.append(sf.getField());
+		  sb.append(sf.getReverse()? " desc" : " asc"); 
+		  sb.append(",");
+	  }
+	//去掉最后一个逗号
+	  if(sb.length() > 0) {
+		  sb.setLength(sb.length()-1);
+	  }
+	  return sb.toString();
+  }
   /**
    * Returns the "preferred" default operator for use by Query Parsers,
    * based on the settings in the IndexSchema which may be overridden using 
