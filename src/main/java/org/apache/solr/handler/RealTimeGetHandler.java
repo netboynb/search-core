@@ -28,7 +28,7 @@ public class RealTimeGetHandler extends SearchHandler {
   @Override
   protected List<String> getDefaultComponents()
   {
-    List<String> names = new ArrayList<String>(1);
+    List<String> names = new ArrayList<>(1);
     names.add(RealTimeGetComponent.COMPONENT_NAME);
     return names;
   }
@@ -38,11 +38,6 @@ public class RealTimeGetHandler extends SearchHandler {
   @Override
   public String getDescription() {
     return "The realtime get handler";
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/RealTimeGetHandler.java $";
   }
 
   @Override

@@ -16,7 +16,7 @@ package org.apache.solr.search.function.distance;
  * limitations under the License.
  */
 
-import org.apache.lucene.index.AtomicReaderContext;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
 import com.spatial4j.core.io.GeohashUtils;
@@ -27,10 +27,10 @@ import java.io.IOException;
 
 /**
  * Takes in a latitude and longitude ValueSource and produces a GeoHash.
- * <p/>
+ * <p>
  * Ex: geohash(lat, lon)
  *
- * <p/>
+ * <p>
  * Note, there is no reciprocal function for this.
  **/
 public class GeohashFunction extends ValueSource {
@@ -46,7 +46,7 @@ public class GeohashFunction extends ValueSource {
   }
 
   @Override
-  public FunctionValues getValues(Map context, AtomicReaderContext readerContext) throws IOException {
+  public FunctionValues getValues(Map context, LeafReaderContext readerContext) throws IOException {
     final FunctionValues latDV = lat.getValues(context, readerContext);
     final FunctionValues lonDV = lon.getValues(context, readerContext);
 

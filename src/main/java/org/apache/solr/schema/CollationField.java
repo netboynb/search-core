@@ -19,10 +19,12 @@ package org.apache.solr.schema;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.StringReader;
 import java.text.Collator;
 import java.text.ParseException;
 import java.text.RuleBasedCollator;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -30,14 +32,17 @@ import org.apache.commons.io.IOUtils;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
+import org.apache.lucene.analysis.util.ResourceLoader;
 import org.apache.lucene.collation.CollationKeyAnalyzer;
+import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.search.DocValuesRangeQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TermRangeQuery;
+import org.apache.lucene.uninverting.UninvertingReader.Type;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.Version;
-import org.apache.lucene.analysis.util.ResourceLoader;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.response.TextResponseWriter;
@@ -139,8 +144,7 @@ public class CollationField extends FieldType {
       else
         throw new SolrException(ErrorCode.SERVER_ERROR, "Invalid decomposition: " + decomposition);
     }
-    // we use 4.0 because it ensures we just encode the pure byte[] keys.
-    analyzer = new CollationKeyAnalyzer(Version.LUCENE_40, collator);
+    analyzer = new CollationKeyAnalyzer(collator);
   }
   
   /**
@@ -173,11 +177,8 @@ public class CollationField extends FieldType {
      input = loader.openResource(fileName);
      String rules = IOUtils.toString(input, "UTF-8");
      return new RuleBasedCollator(rules);
-    } catch (IOException e) {
-      // io error
-      throw new RuntimeException(e);
-    } catch (ParseException e) {
-      // invalid rules
+    } catch (IOException | ParseException e) {
+      // io error or invalid rules
       throw new RuntimeException(e);
     } finally {
       IOUtils.closeQuietly(input);
@@ -193,9 +194,18 @@ public class CollationField extends FieldType {
   public SortField getSortField(SchemaField field, boolean top) {
     return getStringSort(field, top);
   }
+  
+  @Override
+  public Type getUninversionType(SchemaField sf) {
+    if (sf.multiValued()) {
+      return Type.SORTED_SET_BINARY;
+    } else {
+      return Type.SORTED;
+    }
+  }
 
   @Override
-  public Analyzer getAnalyzer() {
+  public Analyzer getIndexAnalyzer() {
     return analyzer;
   }
 
@@ -207,47 +217,70 @@ public class CollationField extends FieldType {
   /**
    * analyze the range with the analyzer, instead of the collator.
    * because jdk collators might not be thread safe (when they are
-   * its just that all methods are synced), this keeps things 
+   * it's just that all methods are synced), this keeps things 
    * simple (we already have a threadlocal clone in the reused TS)
    */
-  private BytesRef analyzeRangePart(String field, String part) {
-    TokenStream source;
-      
-    try {
-      source = analyzer.tokenStream(field, new StringReader(part));
-      source.reset();
-    } catch (IOException e) {
-      throw new RuntimeException("Unable to initialize TokenStream to analyze range part: " + part, e);
-    }
-      
-    TermToBytesRefAttribute termAtt = source.getAttribute(TermToBytesRefAttribute.class);
-    BytesRef bytes = termAtt.getBytesRef();
+  private BytesRef getCollationKey(String field, String text) {     
+    try (TokenStream source = analyzer.tokenStream(field, text)) {
+      source.reset();    
+      TermToBytesRefAttribute termAtt = source.getAttribute(TermToBytesRefAttribute.class);
+      BytesRef bytes = termAtt.getBytesRef();
 
-    // we control the analyzer here: most errors are impossible
-    try {
+      // we control the analyzer here: most errors are impossible
       if (!source.incrementToken())
-        throw new IllegalArgumentException("analyzer returned no terms for range part: " + part);
+        throw new IllegalArgumentException("analyzer returned no terms for text: " + text);
       termAtt.fillBytesRef();
       assert !source.incrementToken();
-    } catch (IOException e) {
-      throw new RuntimeException("error analyzing range part: " + part, e);
-    }
       
-    try {
       source.end();
-      source.close();
+      return BytesRef.deepCopyOf(bytes);
     } catch (IOException e) {
-      throw new RuntimeException("Unable to end & close TokenStream after analyzing range part: " + part, e);
+      throw new RuntimeException("Unable to analyze text: " + text, e);
     }
-      
-    return BytesRef.deepCopyOf(bytes);
   }
   
   @Override
   public Query getRangeQuery(QParser parser, SchemaField field, String part1, String part2, boolean minInclusive, boolean maxInclusive) {
     String f = field.getName();
-    BytesRef low = part1 == null ? null : analyzeRangePart(f, part1);
-    BytesRef high = part2 == null ? null : analyzeRangePart(f, part2);
-    return new TermRangeQuery(field.getName(), low, high, minInclusive, maxInclusive);
+    BytesRef low = part1 == null ? null : getCollationKey(f, part1);
+    BytesRef high = part2 == null ? null : getCollationKey(f, part2);
+    if (!field.indexed() && field.hasDocValues()) {
+      return DocValuesRangeQuery.newBytesRefRange(
+          field.getName(), low, high, minInclusive, maxInclusive);
+    } else {
+      return new TermRangeQuery(field.getName(), low, high, minInclusive, maxInclusive);
+    }
+  }
+  
+  @Override
+  public void checkSchemaField(SchemaField field) {
+    // no-op
+  }
+
+  @Override
+  public List<IndexableField> createFields(SchemaField field, Object value, float boost) {
+    if (field.hasDocValues()) {
+      List<IndexableField> fields = new ArrayList<>();
+      fields.add(createField(field, value, boost));
+      final BytesRef bytes = getCollationKey(field.getName(), value.toString());
+      if (field.multiValued()) {
+        fields.add(new SortedSetDocValuesField(field.getName(), bytes));
+      } else {
+        fields.add(new SortedDocValuesField(field.getName(), bytes));
+      }
+      return fields;
+    } else {
+      return Collections.singletonList(createField(field, value, boost));
+    }
+  }
+
+  @Override
+  public Object marshalSortValue(Object value) {
+    return marshalBase64SortValue(value);
+  }
+
+  @Override
+  public Object unmarshalSortValue(Object value) {
+    return unmarshalBase64SortValue(value);
   }
 }

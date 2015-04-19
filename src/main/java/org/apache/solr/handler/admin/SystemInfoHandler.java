@@ -17,9 +17,9 @@
 
 package org.apache.solr.handler.admin;
 
-import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.management.ManagementFactory;
 import java.lang.management.OperatingSystemMXBean;
@@ -37,6 +37,7 @@ import org.apache.commons.io.IOUtils;
 import org.apache.lucene.LucenePackage;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
+import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.request.SolrQueryRequest;
@@ -44,6 +45,8 @@ import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.schema.IndexSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.solr.common.params.CommonParams.NAME;
 
 
 /**
@@ -62,8 +65,20 @@ public class SystemInfoHandler extends RequestHandlerBase
   //(ie: not static, so core reload will refresh)
   private String hostname = null;
 
+  private CoreContainer cc;
+
   public SystemInfoHandler() {
     super();
+    init();
+  }
+
+  public SystemInfoHandler(CoreContainer cc) {
+    super();
+    this.cc = cc;
+    init();
+  }
+  
+  private void init() {
     try {
       InetAddress addr = InetAddress.getLocalHost();
       hostname = addr.getCanonicalHostName();
@@ -75,22 +90,37 @@ public class SystemInfoHandler extends RequestHandlerBase
   @Override
   public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws Exception
   {
-    rsp.add( "core", getCoreInfo( req.getCore() ) );
-    boolean solrCloudMode = req.getCore().getCoreDescriptor().getCoreContainer().isZooKeeperAware();
+    SolrCore core = req.getCore();
+    if (core != null) rsp.add( "core", getCoreInfo( core, req.getSchema() ) );
+    boolean solrCloudMode =  getCoreContainer(req, core).isZooKeeperAware();
     rsp.add( "mode", solrCloudMode ? "solrcloud" : "std");
+    if (solrCloudMode) {
+      rsp.add("zkHost", getCoreContainer(req, core).getZkController().getZkServerAddress());
+    }
+    if (cc != null)
+      rsp.add( "solr_home", cc.getSolrHome());
     rsp.add( "lucene", getLuceneInfo() );
     rsp.add( "jvm", getJvmInfo() );
     rsp.add( "system", getSystemInfo() );
     rsp.setHttpCaching(false);
   }
+
+  private CoreContainer getCoreContainer(SolrQueryRequest req, SolrCore core) {
+    CoreContainer coreContainer;
+    if (core != null) {
+       coreContainer = req.getCore().getCoreDescriptor().getCoreContainer();
+    } else {
+      coreContainer = cc;
+    }
+    return coreContainer;
+  }
   
   /**
    * Get system info
    */
-  private SimpleOrderedMap<Object> getCoreInfo( SolrCore core ) {
-    SimpleOrderedMap<Object> info = new SimpleOrderedMap<Object>();
+  private SimpleOrderedMap<Object> getCoreInfo( SolrCore core, IndexSchema schema ) {
+    SimpleOrderedMap<Object> info = new SimpleOrderedMap<>();
     
-    IndexSchema schema = core.getSchema();
     info.add( "schema", schema != null ? schema.getSchemaName():"no schema!" );
     
     // Host
@@ -103,10 +133,15 @@ public class SystemInfoHandler extends RequestHandlerBase
     info.add( "start", new Date(core.getStartTime()) );
 
     // Solr Home
-    SimpleOrderedMap<Object> dirs = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> dirs = new SimpleOrderedMap<>();
     dirs.add( "cwd" , new File( System.getProperty("user.dir")).getAbsolutePath() );
     dirs.add( "instance", new File( core.getResourceLoader().getInstanceDir() ).getAbsolutePath() );
-    dirs.add( "data", new File( core.getDataDir() ).getAbsolutePath() );
+    try {
+      dirs.add( "data", core.getDirectoryFactory().normalize(core.getDataDir()));
+    } catch (IOException e) {
+      log.warn("Problem getting the normalized data directory path", e);
+      dirs.add( "data", "N/A" );
+    }
     dirs.add( "dirimpl", core.getDirectoryFactory().getClass().getName());
     try {
       dirs.add( "index", core.getDirectoryFactory().normalize(core.getIndexDir()) );
@@ -122,10 +157,10 @@ public class SystemInfoHandler extends RequestHandlerBase
    * Get system info
    */
   public static SimpleOrderedMap<Object> getSystemInfo() {
-    SimpleOrderedMap<Object> info = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> info = new SimpleOrderedMap<>();
     
     OperatingSystemMXBean os = ManagementFactory.getOperatingSystemMXBean();
-    info.add( "name", os.getName() );
+    info.add(NAME, os.getName());
     info.add( "version", os.getVersion() );
     info.add( "arch", os.getArch() );
     info.add( "systemLoadAverage", os.getSystemLoadAverage());
@@ -149,7 +184,7 @@ public class SystemInfoHandler extends RequestHandlerBase
         info.add( "uptime", execute( "uptime" ) );
       }
     }
-    catch( Throwable ex ) {
+    catch( Exception ex ) {
       ex.printStackTrace();
     } 
     return info;
@@ -185,20 +220,24 @@ public class SystemInfoHandler extends RequestHandlerBase
    */
   private static String execute( String cmd )
   {
-    DataInputStream in = null;
+    InputStream in = null;
     Process process = null;
     
     try {
       process = Runtime.getRuntime().exec(cmd);
-      in = new DataInputStream( process.getInputStream() );
+      in = process.getInputStream();
       // use default charset from locale here, because the command invoked also uses the default locale:
       return IOUtils.toString(new InputStreamReader(in, Charset.defaultCharset()));
-    }
-    catch( Exception ex ) {
+    } catch( Exception ex ) {
       // ignore - log.warn("Error executing command", ex);
       return "(error executing: " + cmd + ")";
-    }
-    finally {
+    } catch (Error err) {
+      if (err.getMessage() != null && (err.getMessage().contains("posix_spawn") || err.getMessage().contains("UNIXProcess"))) {
+        log.warn("Error forking command due to JVM locale bug (see https://issues.apache.org/jira/browse/SOLR-6387): " + err.getMessage());
+        return "(error executing: " + cmd + ")";
+      }
+      throw err;
+    } finally {
       if (process != null) {
         IOUtils.closeQuietly( process.getOutputStream() );
         IOUtils.closeQuietly( process.getInputStream() );
@@ -212,7 +251,7 @@ public class SystemInfoHandler extends RequestHandlerBase
    */
   public static SimpleOrderedMap<Object> getJvmInfo()
   {
-    SimpleOrderedMap<Object> jvm = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> jvm = new SimpleOrderedMap<>();
 
     final String javaVersion = System.getProperty("java.specification.version", "unknown"); 
     final String javaVendor = System.getProperty("java.specification.vendor", "unknown"); 
@@ -225,21 +264,21 @@ public class SystemInfoHandler extends RequestHandlerBase
 
     // Summary Info
     jvm.add( "version", jreVersion + " " + vmVersion);
-    jvm.add( "name", jreVendor + " " + vmName );
+    jvm.add(NAME, jreVendor + " " + vmName);
     
     // details
-    SimpleOrderedMap<Object> java = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> java = new SimpleOrderedMap<>();
     java.add( "vendor", javaVendor );
-    java.add( "name", javaName );
+    java.add(NAME, javaName);
     java.add( "version", javaVersion );
     jvm.add( "spec", java );
-    SimpleOrderedMap<Object> jre = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> jre = new SimpleOrderedMap<>();
     jre.add( "vendor", jreVendor );
     jre.add( "version", jreVersion );
     jvm.add( "jre", jre );
-    SimpleOrderedMap<Object> vm = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> vm = new SimpleOrderedMap<>();
     vm.add( "vendor", vmVendor );
-    vm.add( "name", vmName );
+    vm.add(NAME, vmName);
     vm.add( "version", vmVersion );
     jvm.add( "vm", vm );
            
@@ -250,8 +289,8 @@ public class SystemInfoHandler extends RequestHandlerBase
     // not thread safe, but could be thread local
     DecimalFormat df = new DecimalFormat("#.#", DecimalFormatSymbols.getInstance(Locale.ROOT));
 
-    SimpleOrderedMap<Object> mem = new SimpleOrderedMap<Object>();
-    SimpleOrderedMap<Object> raw = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> mem = new SimpleOrderedMap<>();
+    SimpleOrderedMap<Object> raw = new SimpleOrderedMap<>();
     long free = runtime.freeMemory();
     long max = runtime.maxMemory();
     long total = runtime.totalMemory();
@@ -272,7 +311,7 @@ public class SystemInfoHandler extends RequestHandlerBase
     jvm.add("memory", mem);
 
     // JMX properties -- probably should be moved to a different handler
-    SimpleOrderedMap<Object> jmx = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> jmx = new SimpleOrderedMap<>();
     try{
       RuntimeMXBean mx = ManagementFactory.getRuntimeMXBean();
       jmx.add( "bootclasspath", mx.getBootClassPath());
@@ -294,7 +333,7 @@ public class SystemInfoHandler extends RequestHandlerBase
   }
   
   private static SimpleOrderedMap<Object> getLuceneInfo() {
-    SimpleOrderedMap<Object> info = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> info = new SimpleOrderedMap<>();
 
     Package p = SolrCore.class.getPackage();
 
@@ -314,11 +353,6 @@ public class SystemInfoHandler extends RequestHandlerBase
   @Override
   public String getDescription() {
     return "Get System Info";
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/admin/SystemInfoHandler.java $";
   }
   
   private static final long ONE_KB = 1024;

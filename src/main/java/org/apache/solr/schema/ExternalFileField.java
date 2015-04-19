@@ -16,20 +16,21 @@
  */
 package org.apache.solr.schema;
 
+import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.search.SortField;
-import org.apache.lucene.index.IndexableField;
-import org.apache.solr.search.function.FileFloatSource;
-import org.apache.solr.search.QParser;
-import org.apache.solr.response.TextResponseWriter;
+import org.apache.lucene.uninverting.UninvertingReader.Type;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.response.TextResponseWriter;
+import org.apache.solr.search.QParser;
+import org.apache.solr.search.function.FileFloatSource;
 
-import java.util.Map;
 import java.io.IOException;
+import java.util.Map;
 
 /** Get values from an external file instead of the index.
  *
- * <p/><code>keyField</code> will normally be the unique key field, but it doesn't have to be.
+ * <p><code>keyField</code> will normally be the unique key field, but it doesn't have to be.
  * <ul><li> It's OK to have a keyField value that can't be found in the index</li>
  * <li>It's OK to have some documents without a keyField in the file (defVal is used as the default)</li>
  * <li>It's OK for a keyField value to point to multiple documents (no uniqueness requirement)</li>
@@ -39,23 +40,23 @@ import java.io.IOException;
  * This parameter has never been implemented. As of Solr 3.6/4.0 it is optional and can be omitted.
  *
  * The format of the external file is simply newline separated keyFieldValue=floatValue.
- * <br/>Example:
- * <br/><code>doc33=1.414</code>
- * <br/><code>doc34=3.14159</code>
- * <br/><code>doc40=42</code>
+ * <br>Example:
+ * <br><code>doc33=1.414</code>
+ * <br><code>doc34=3.14159</code>
+ * <br><code>doc40=42</code>
  *
- * <p/>Solr looks for the external file in the index directory under the name of
+ * <p>Solr looks for the external file in the index directory under the name of
  * external_&lt;fieldname&gt; or external_&lt;fieldname&gt;.*
  *
- * <p/>If any files of the latter pattern appear, the last (after being sorted by name) will be used and previous versions will be deleted.
+ * <p>If any files of the latter pattern appear, the last (after being sorted by name) will be used and previous versions will be deleted.
  * This is to help support systems where one may not be able to overwrite a file (like Windows, if the file is in use).
- * <p/>If the external file has already been loaded, and it is changed, those changes will not be visible until a commit has been done.
- * <p/>The external file may be sorted or unsorted by the key field, but it will be substantially slower (untested) if it isn't sorted.
- * <p/>Fields of this type may currently only be used as a ValueSource in a FunctionQuery.
+ * <p>If the external file has already been loaded, and it is changed, those changes will not be visible until a commit has been done.
+ * <p>The external file may be sorted or unsorted by the key field, but it will be substantially slower (untested) if it isn't sorted.
+ * <p>Fields of this type may currently only be used as a ValueSource in a FunctionQuery.
  *
  * @see ExternalFileFieldReloader
  */
-public class ExternalFileField extends FieldType {
+public class ExternalFileField extends FieldType implements SchemaAware {
   private FieldType ftype;
   private String keyFieldName;
   private IndexSchema schema;
@@ -69,9 +70,9 @@ public class ExternalFileField extends FieldType {
     String ftypeS = args.remove("valType");
     if (ftypeS != null) {
       ftype = schema.getFieldTypes().get(ftypeS);
-      if (ftype != null && !(ftype instanceof FloatField) && !(ftype instanceof TrieFloatField)) {
+      if (ftype != null && !(ftype instanceof TrieFloatField)) {
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
-            "Only float and pfloat (Trie|Float)Field are currently supported as external field type.  Got " + ftypeS);
+            "Only float (TrieFloatField) is currently supported as external field type.  Got " + ftypeS);
       }
     }
     keyFieldName = args.remove("keyField");
@@ -89,6 +90,11 @@ public class ExternalFileField extends FieldType {
   public SortField getSortField(SchemaField field,boolean reverse) {
     FileFloatSource source = getFileFloatSource(field);
     return source.getSortField(reverse);
+  }
+  
+  @Override
+  public Type getUninversionType(SchemaField sf) {
+    return null;
   }
 
   @Override
@@ -127,4 +133,8 @@ public class ExternalFileField extends FieldType {
         schema.getField(keyFieldName);
   }
 
+  @Override
+  public void inform(IndexSchema schema) {
+    this.schema = schema;
+  }
 }

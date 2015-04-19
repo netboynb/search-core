@@ -17,12 +17,12 @@
 
 package org.apache.solr.search.function;
 
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.search.DocIdSet;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.BitsFilteredDocIdSet;
-import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.util.Bits;
 import org.apache.solr.search.SolrFilter;
 
@@ -74,7 +74,7 @@ public class ValueSourceRangeFilter extends SolrFilter {
 
 
   @Override
-  public DocIdSet getDocIdSet(final Map context, final AtomicReaderContext readerContext, Bits acceptDocs) throws IOException {
+  public DocIdSet getDocIdSet(final Map context, final LeafReaderContext readerContext, Bits acceptDocs) throws IOException {
      return BitsFilteredDocIdSet.wrap(new DocIdSet() {
        @Override
        public DocIdSetIterator iterator() throws IOException {
@@ -83,6 +83,11 @@ public class ValueSourceRangeFilter extends SolrFilter {
        @Override
        public Bits bits() {
          return null;  // don't use random access
+       }
+
+       @Override
+       public long ramBytesUsed() {
+         return 0L;
        }
      }, acceptDocs);
   }
@@ -93,7 +98,7 @@ public class ValueSourceRangeFilter extends SolrFilter {
   }
 
   @Override
-  public String toString() {
+  public String toString(String field) {
     StringBuilder sb = new StringBuilder();
     sb.append("frange(");
     sb.append(valueSource);

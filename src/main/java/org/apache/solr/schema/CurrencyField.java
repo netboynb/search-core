@@ -35,19 +35,21 @@ import javax.xml.xpath.XPathFactory;
 
 import org.apache.lucene.analysis.util.ResourceLoader;
 import org.apache.lucene.analysis.util.ResourceLoaderAware;
-import org.apache.lucene.index.AtomicReaderContext;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.BooleanClause.Occur;
+import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.FieldValueQuery;
 import org.apache.lucene.search.Filter;
-import org.apache.lucene.search.FieldValueFilter;
-import org.apache.lucene.queries.ChainedFilter;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.QueryWrapperFilter;
+import org.apache.lucene.search.SortField;
+import org.apache.lucene.uninverting.UninvertingReader.Type;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.response.TextResponseWriter;
-import org.apache.solr.response.XMLWriter;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.SolrConstantScoreQuery;
 import org.apache.solr.search.function.ValueSourceRangeFilter;
@@ -130,7 +132,7 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
     // Initialize field type for amount
     fieldTypeAmountRaw = new TrieLongField();
     fieldTypeAmountRaw.setTypeName("amount_raw_type_tlong");
-    Map<String,String> map = new HashMap<String,String>(1);
+    Map<String,String> map = new HashMap<>(1);
     map.put("precisionStep", precisionStepString);
     fieldTypeAmountRaw.init(schema, map);
     
@@ -148,7 +150,7 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
       provider = c.newInstance();
       provider.init(args);
     } catch (Exception e) {
-      throw new SolrException(ErrorCode.BAD_REQUEST, "Error instantiating exhange rate provider "+exchangeRateProviderClass+": " + e.getMessage(), e);
+      throw new SolrException(ErrorCode.BAD_REQUEST, "Error instantiating exchange rate provider "+exchangeRateProviderClass+": " + e.getMessage(), e);
     }
   }
 
@@ -171,7 +173,7 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
   public List<IndexableField> createFields(SchemaField field, Object externalVal, float boost) {
     CurrencyValue value = CurrencyValue.parse(externalVal.toString(), defaultCurrency);
 
-    List<IndexableField> f = new ArrayList<IndexableField>();
+    List<IndexableField> f = new ArrayList<>();
     SchemaField amountField = getAmountField(field);
     f.add(amountField.createField(String.valueOf(value.getAmount()), amountField.indexed() && !amountField.omitNorms() ? boost : 1F));
     SchemaField currencyField = getCurrencyField(field);
@@ -201,7 +203,7 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
 
   private void createDynamicCurrencyField(String suffix, FieldType type) {
     String name = "*" + POLY_FIELD_SEPARATOR + suffix;
-    Map<String, String> props = new HashMap<String, String>();
+    Map<String, String> props = new HashMap<>();
     props.put("indexed", "true");
     props.put("stored", "false");
     props.put("multiValued", "false");
@@ -211,12 +213,15 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
   }
 
   /**
-   * When index schema is informed, add dynamic fields.
-   *
-   * @param indexSchema The index schema.
+   * When index schema is informed, add dynamic fields "*____currency" and "*____amount_raw". 
+   * 
+   * {@inheritDoc}
+   * 
+   * @param schema {@inheritDoc}
    */
   @Override
-  public void inform(IndexSchema indexSchema) {
+  public void inform(IndexSchema schema) {
+    this.schema = schema;
     createDynamicCurrencyField(FIELD_SUFFIX_CURRENCY,   fieldTypeCurrency);
     createDynamicCurrencyField(FIELD_SUFFIX_AMOUNT_RAW, fieldTypeAmountRaw);
   }
@@ -248,7 +253,7 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
    * <p>
    * Returns a ValueSource over this field in which the numeric value for 
    * each document represents the indexed value as converted to the default 
-   * currency for the field, normalized to it's most granular form based 
+   * currency for the field, normalized to its most granular form based 
    * on the default fractional digits.
    * </p>
    * <p>
@@ -324,17 +329,17 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
                           (p2 != null) ? p2.getCurrencyCode() : defaultCurrency;
 
     // ValueSourceRangeFilter doesn't check exists(), so we have to
-    final Filter docsWithValues = new FieldValueFilter(getAmountField(field).getName());
+    final Filter docsWithValues = new QueryWrapperFilter(new FieldValueQuery(getAmountField(field).getName()));
     final Filter vsRangeFilter = new ValueSourceRangeFilter
       (new RawCurrencyValueSource(field, currencyCode, parser),
        p1 == null ? null : p1.getAmount() + "", 
        p2 == null ? null : p2.getAmount() + "",
        minInclusive, maxInclusive);
-    final Filter docsInRange = new ChainedFilter
-      (new Filter [] { docsWithValues, vsRangeFilter }, ChainedFilter.AND);
+    final BooleanQuery docsInRange = new BooleanQuery();
+    docsInRange.add(docsWithValues, Occur.FILTER);
+    docsInRange.add(vsRangeFilter, Occur.FILTER);
 
-    return new SolrConstantScoreQuery(docsInRange);
-    
+    return new SolrConstantScoreQuery(new QueryWrapperFilter(docsInRange));
   }
 
   @Override
@@ -342,9 +347,10 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
     // Convert all values to default currency for sorting.
     return (new RawCurrencyValueSource(field, defaultCurrency, null)).getSortField(reverse);
   }
-
-  public void write(XMLWriter xmlWriter, String name, IndexableField field) throws IOException {
-    xmlWriter.writeStr(name, field.stringValue(), false);
+  
+  @Override
+  public Type getUninversionType(SchemaField sf) {
+    return null;
   }
 
   @Override
@@ -382,7 +388,7 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
     }
 
     @Override
-    public FunctionValues getValues(Map context, AtomicReaderContext reader) 
+    public FunctionValues getValues(Map context, LeafReaderContext reader) 
       throws IOException {
       final FunctionValues amounts = source.getValues(context, reader);
       // the target digits & currency of our source, 
@@ -495,7 +501,7 @@ public class CurrencyField extends FieldType implements SchemaAware, ResourceLoa
     public Currency getTargetCurrency() { return targetCurrency; }
 
     @Override
-    public FunctionValues getValues(Map context, AtomicReaderContext reader) throws IOException {
+    public FunctionValues getValues(Map context, LeafReaderContext reader) throws IOException {
       final FunctionValues amounts = amountValues.getValues(context, reader);
       final FunctionValues currencies = currencyValues.getValues(context, reader);
 
@@ -668,7 +674,7 @@ class FileExchangeRateProvider implements ExchangeRateProvider {
   protected static final String PARAM_CURRENCY_CONFIG       = "currencyConfig";
 
   // Exchange rate map, maps Currency Code -> Currency Code -> Rate
-  private Map<String, Map<String, Double>> rates = new HashMap<String, Map<String, Double>>();
+  private Map<String, Map<String, Double>> rates = new HashMap<>();
 
   private String currencyConfigFile;
   private ResourceLoader loader;
@@ -737,7 +743,7 @@ class FileExchangeRateProvider implements ExchangeRateProvider {
     Map<String, Double> rhs = ratesMap.get(sourceCurrencyCode);
 
     if (rhs == null) {
-      rhs = new HashMap<String, Double>();
+      rhs = new HashMap<>();
       ratesMap.put(sourceCurrencyCode, rhs);
     }
 
@@ -766,7 +772,7 @@ class FileExchangeRateProvider implements ExchangeRateProvider {
 
   @Override
   public Set<String> listAvailableCurrencies() {
-    Set<String> currencies = new HashSet<String>();
+    Set<String> currencies = new HashSet<>();
     for(String from : rates.keySet()) {
       currencies.add(from);
       for(String to : rates.get(from).keySet()) {
@@ -779,7 +785,7 @@ class FileExchangeRateProvider implements ExchangeRateProvider {
   @Override
   public boolean reload() throws SolrException {
     InputStream is = null;
-    Map<String, Map<String, Double>> tmpRates = new HashMap<String, Map<String, Double>>();
+    Map<String, Map<String, Double>> tmpRates = new HashMap<>();
     try {
       log.info("Reloading exchange rates from file "+this.currencyConfigFile);
 
@@ -830,13 +836,7 @@ class FileExchangeRateProvider implements ExchangeRateProvider {
           
           addRate(tmpRates, fromCurrency, toCurrency, exchangeRate);
         }
-      } catch (SAXException e) {
-        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Error parsing currency config.", e);
-      } catch (IOException e) {
-        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Error parsing currency config.", e);
-      } catch (ParserConfigurationException e) {
-        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Error parsing currency config.", e);
-      } catch (XPathExpressionException e) {
+      } catch (SAXException | XPathExpressionException | ParserConfigurationException | IOException e) {
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Error parsing currency config.", e);
       }
     } catch (IOException e) {

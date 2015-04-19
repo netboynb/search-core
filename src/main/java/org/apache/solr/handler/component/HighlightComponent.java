@@ -17,6 +17,7 @@
 
 package org.apache.solr.handler.component;
 
+import com.google.common.base.Objects;
 import org.apache.lucene.search.Query;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.CommonParams;
@@ -24,22 +25,24 @@ import org.apache.solr.common.params.HighlightParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
+import org.apache.solr.core.PluginInfo;
+import org.apache.solr.core.SolrCore;
+import org.apache.solr.highlight.DefaultSolrHighlighter;
 import org.apache.solr.highlight.PostingsSolrHighlighter;
 import org.apache.solr.highlight.SolrHighlighter;
-import org.apache.solr.highlight.DefaultSolrHighlighter;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.search.QParser;
+import org.apache.solr.search.QParserPlugin;
+import org.apache.solr.search.QueryParsing;
 import org.apache.solr.search.SyntaxError;
 import org.apache.solr.util.SolrPluginUtils;
 import org.apache.solr.util.plugin.PluginInfoInitialized;
 import org.apache.solr.util.plugin.SolrCoreAware;
-import org.apache.solr.core.PluginInfo;
-import org.apache.solr.core.SolrCore;
 
 import java.io.IOException;
 import java.net.URL;
-import java.util.Map;
 import java.util.List;
+import java.util.Map;
 
 /**
  * TODO!
@@ -69,9 +72,11 @@ public class HighlightComponent extends SearchComponent implements PluginInfoIni
     rb.doHighlights = highlighter.isHighlightingEnabled(params);
     if(rb.doHighlights){
       String hlq = params.get(HighlightParams.Q);
+      String hlparser = Objects.firstNonNull(params.get(HighlightParams.QPARSER),
+                                              params.get(QueryParsing.DEFTYPE, QParserPlugin.DEFAULT_QTYPE));
       if(hlq != null){
         try {
-          QParser parser = QParser.getParser(hlq, null, rb.req);
+          QParser parser = QParser.getParser(hlq, hlparser, rb.req);
           rb.setHighlightQuery(parser.getHighlightQuery());
         } catch (SyntaxError e) {
           throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, e);
@@ -87,7 +92,6 @@ public class HighlightComponent extends SearchComponent implements PluginInfoIni
       PluginInfo pluginInfo = core.getSolrConfig().getPluginInfo(SolrHighlighter.class.getName()); //TODO deprecated configuration remove later
       if (pluginInfo != null) {
         highlighter = core.createInitInstance(pluginInfo, SolrHighlighter.class, null, DefaultSolrHighlighter.class.getName());
-        highlighter.initalize(core.getSolrConfig());
       } else {
         DefaultSolrHighlighter defHighlighter = new DefaultSolrHighlighter(core);
         defHighlighter.init(PluginInfo.EMPTY_INFO);
@@ -177,18 +181,23 @@ public class HighlightComponent extends SearchComponent implements PluginInfoIni
       for (ShardRequest sreq : rb.finished) {
         if ((sreq.purpose & ShardRequest.PURPOSE_GET_HIGHLIGHTS) == 0) continue;
         for (ShardResponse srsp : sreq.responses) {
+          if (srsp.getException() != null) {
+            // can't expect the highlight content if there was an exception for this request
+            // this should only happen when using shards.tolerant=true
+            continue;
+          }
           NamedList hl = (NamedList)srsp.getSolrResponse().getResponse().get("highlighting");
           for (int i=0; i<hl.size(); i++) {
             String id = hl.getName(i);
             ShardDoc sdoc = rb.resultIds.get(id);
             int idx = sdoc.positionInResponse;
-            arr[idx] = new NamedList.NamedListEntry<Object>(id, hl.getVal(i));
+            arr[idx] = new NamedList.NamedListEntry<>(id, hl.getVal(i));
           }
         }
       }
 
       // remove nulls in case not all docs were able to be retrieved
-      rb.rsp.add("highlighting", SolrPluginUtils.removeNulls(new SimpleOrderedMap(arr)));      
+      rb.rsp.add("highlighting", SolrPluginUtils.removeNulls(arr, new SimpleOrderedMap<Object>()));      
     }
   }
 
@@ -203,11 +212,6 @@ public class HighlightComponent extends SearchComponent implements PluginInfoIni
   @Override
   public String getDescription() {
     return "Highlighting";
-  }
-  
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/component/HighlightComponent.java $";
   }
   
   @Override

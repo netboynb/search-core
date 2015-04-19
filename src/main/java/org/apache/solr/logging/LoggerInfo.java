@@ -19,6 +19,8 @@ package org.apache.solr.logging;
 
 import org.apache.solr.common.util.SimpleOrderedMap;
 
+import static org.apache.solr.common.params.CommonParams.NAME;
+
 /**
  * Wrapper class for Logger implementaions
  */
@@ -43,8 +45,8 @@ public abstract class LoggerInfo implements Comparable<LoggerInfo> {
   public abstract boolean isSet();
 
   public SimpleOrderedMap<?> getInfo() {
-    SimpleOrderedMap<Object> info = new SimpleOrderedMap<Object>();
-    info.add("name", getName());
+    SimpleOrderedMap<Object> info = new SimpleOrderedMap<>();
+    info.add(NAME, getName());
     info.add("level", getLevel());
     info.add("set", isSet());
     return info;

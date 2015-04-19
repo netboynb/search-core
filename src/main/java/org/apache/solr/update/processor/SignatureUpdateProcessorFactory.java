@@ -75,7 +75,7 @@ public class SignatureUpdateProcessorFactory
 
   @Override
   public void inform(SolrCore core) {
-    final SchemaField field = core.getSchema().getFieldOrNull(getSignatureField());
+    final SchemaField field = core.getLatestSchema().getFieldOrNull(getSignatureField());
     if (null == field) {
       throw new SolrException
         (ErrorCode.SERVER_ERROR,
@@ -134,7 +134,7 @@ public class SignatureUpdateProcessorFactory
       if (enabled) {
         SolrInputDocument doc = cmd.getSolrInputDocument();
         List<String> currDocSigFields = null;
-        boolean isPartialUpdate = DistributedUpdateProcessor.isAtomicUpdate(cmd);
+        boolean isPartialUpdate = AtomicUpdateDocumentMerger.isAtomicUpdate(cmd);
         if (sigFields == null || sigFields.size() == 0) {
           if (isPartialUpdate)  {
             throw new SolrException
@@ -142,7 +142,7 @@ public class SignatureUpdateProcessorFactory
                     "Can't use SignatureUpdateProcessor with partial updates on signature fields");
           }
           Collection<String> docFields = doc.getFieldNames();
-          currDocSigFields = new ArrayList<String>(docFields.size());
+          currDocSigFields = new ArrayList<>(docFields.size());
           currDocSigFields.addAll(docFields);
           Collections.sort(currDocSigFields);
         } else {

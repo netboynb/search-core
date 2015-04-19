@@ -19,6 +19,7 @@ package org.apache.solr.handler;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.Date;
 import java.util.Locale;
 
@@ -28,11 +29,11 @@ import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.core.SolrCore;
+import org.apache.solr.schema.TrieDateField;
 import org.apache.solr.util.plugin.SolrCoreAware;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestHandler;
 import org.apache.solr.response.SolrQueryResponse;
-import org.apache.solr.schema.DateField;
 
 import org.apache.commons.io.FileUtils;
 
@@ -49,7 +50,7 @@ import org.slf4j.LoggerFactory;
  * </p>
  * 
  * <p> 
- * In it's simplest form, the PingRequestHandler should be
+ * In its simplest form, the PingRequestHandler should be
  * configured with some defaults indicating a request that should be
  * executed.  If the request succeeds, then the PingRequestHandler
  * will respond back with a simple "OK" status.  If the request fails,
@@ -253,8 +254,8 @@ public class PingRequestHandler extends RequestHandlerBase implements SolrCoreAw
       core.execute(handler, req, pingrsp );
       ex = pingrsp.getException();
     }
-    catch( Throwable th ) {
-      ex = th;
+    catch( Exception e ) {
+      ex = e;
     }
     
     // Send an error or an 'OK' message (response code will be 200)
@@ -274,16 +275,18 @@ public class PingRequestHandler extends RequestHandlerBase implements SolrCoreAw
       try {
         // write out when the file was created
         FileUtils.write(healthcheck, 
-                        DateField.formatExternal(new Date()), "UTF-8");
+                        TrieDateField.formatExternal(new Date()), "UTF-8");
       } catch (IOException e) {
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, 
                                 "Unable to write healthcheck flag file", e);
       }
     } else {
-      if (healthcheck.exists() && !healthcheck.delete()){
+      try {
+        Files.deleteIfExists(healthcheck.toPath());
+      } catch (Throwable cause) {
         throw new SolrException(SolrException.ErrorCode.NOT_FOUND,
                                 "Did not successfully delete healthcheck file: "
-                                +healthcheck.getAbsolutePath());
+                                +healthcheck.getAbsolutePath(), cause);
       }
     }
   }
@@ -292,10 +295,5 @@ public class PingRequestHandler extends RequestHandlerBase implements SolrCoreAw
   @Override
   public String getDescription() {
     return "Reports application health to a load-balancer";
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/PingRequestHandler.java $";
   }
 }

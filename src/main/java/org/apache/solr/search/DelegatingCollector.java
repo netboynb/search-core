@@ -18,23 +18,25 @@
 package org.apache.solr.search;
 
 
-import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.index.AtomicReaderContext;
+import java.io.IOException;
+
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.Scorer;
-
-import java.io.IOException;
+import org.apache.lucene.search.SimpleCollector;
 
 
 /** A simple delegating collector where one can set the delegate after creation */
-public class DelegatingCollector extends Collector {
+public class DelegatingCollector extends SimpleCollector {
 
   /* for internal testing purposes only to determine the number of times a delegating collector chain was used */
   public static int setLastDelegateCount;
 
   protected Collector delegate;
+  protected LeafCollector leafDelegate;
   protected Scorer scorer;
-  protected AtomicReaderContext context;
+  protected LeafReaderContext context;
   protected int docBase;
 
   public Collector getDelegate() {
@@ -56,24 +58,32 @@ public class DelegatingCollector extends Collector {
   @Override
   public void setScorer(Scorer scorer) throws IOException {
     this.scorer = scorer;
-    delegate.setScorer(scorer);
+    if (leafDelegate != null) {
+      leafDelegate.setScorer(scorer);
+    }
+  }
+
+  @Override
+  public boolean needsScores() {
+    return delegate.needsScores();
   }
 
   @Override
   public void collect(int doc) throws IOException {
-    delegate.collect(doc);
+    leafDelegate.collect(doc);
   }
 
   @Override
-  public void setNextReader(AtomicReaderContext context) throws IOException {
+  protected void doSetNextReader(LeafReaderContext context) throws IOException {
     this.context = context;
     this.docBase = context.docBase;
-    delegate.setNextReader(context);
+    leafDelegate = delegate.getLeafCollector(context);
   }
 
-  @Override
-  public boolean acceptsDocsOutOfOrder() {
-    return delegate.acceptsDocsOutOfOrder();
+  public void finish() throws IOException {
+    if(delegate instanceof DelegatingCollector) {
+      ((DelegatingCollector) delegate).finish();
+    }
   }
 }
 

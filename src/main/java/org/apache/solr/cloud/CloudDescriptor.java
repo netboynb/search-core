@@ -17,10 +17,19 @@ package org.apache.solr.cloud;
  * limitations under the License.
  */
 
-import org.apache.solr.common.cloud.ZkStateReader;
+import java.util.Properties;
+
+import org.apache.solr.common.cloud.Replica;
+import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.params.SolrParams;
+import org.apache.solr.core.CoreDescriptor;
+import org.apache.solr.util.PropertiesUtil;
+
+import com.google.common.base.Strings;
 
 public class CloudDescriptor {
+
+  private final CoreDescriptor cd;
   private String shardId;
   private String collectionName;
   private SolrParams params;
@@ -28,15 +37,41 @@ public class CloudDescriptor {
   private Integer numShards;
   private String nodeName = null;
 
+  /* shardRange and shardState are used once-only during sub shard creation for shard splits
+   * Use the values from {@link Slice} instead */
+  volatile String shardRange = null;
+  volatile Slice.State shardState = Slice.State.ACTIVE;
+  volatile String shardParent = null;
+
   volatile boolean isLeader = false;
-  volatile String lastPublished = ZkStateReader.ACTIVE;
+  volatile Replica.State lastPublished = Replica.State.ACTIVE;
+
+  public static final String NUM_SHARDS = "numShards";
+
+  public CloudDescriptor(String coreName, Properties props, CoreDescriptor cd) {
+    this.cd = cd;
+    this.shardId = props.getProperty(CoreDescriptor.CORE_SHARD, null);
+    if (Strings.isNullOrEmpty(shardId))
+      this.shardId = null;
+    // If no collection name is specified, we default to the core name
+    this.collectionName = props.getProperty(CoreDescriptor.CORE_COLLECTION, coreName);
+    this.roles = props.getProperty(CoreDescriptor.CORE_ROLES, null);
+    this.nodeName = props.getProperty(CoreDescriptor.CORE_NODE_NAME);
+    if (Strings.isNullOrEmpty(nodeName))
+      this.nodeName = null;
+    this.numShards = PropertiesUtil.toInteger(props.getProperty(CloudDescriptor.NUM_SHARDS), null);
+  }
   
-  public String getLastPublished() {
+  public Replica.State getLastPublished() {
     return lastPublished;
   }
 
   public boolean isLeader() {
     return isLeader;
+  }
+  
+  public void setLeader(boolean isLeader) {
+    this.isLeader = isLeader;
   }
 
   public void setShardId(String shardId) {
@@ -87,6 +122,7 @@ public class CloudDescriptor {
 
   public void setCoreNodeName(String nodeName) {
     this.nodeName = nodeName;
+    if(nodeName==null) cd.getPersistableStandardProperties().remove(CoreDescriptor.CORE_NODE_NAME);
+    else cd.getPersistableStandardProperties().setProperty(CoreDescriptor.CORE_NODE_NAME, nodeName);
   }
-
 }

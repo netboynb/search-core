@@ -16,60 +16,60 @@
  */
 package org.apache.solr.handler.component;
 
+import org.apache.solr.common.params.ModifiableSolrParams;
+
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.solr.common.params.ModifiableSolrParams;
 
 // todo... when finalized make accessors
 public class ShardRequest {
-	public final static String[] ALL_SHARDS = null;
+  public final static String[] ALL_SHARDS = null;
 
-	public final static int PURPOSE_PRIVATE = 0x01;
-	public final static int PURPOSE_GET_TERM_DFS = 0x02;
-	public final static int PURPOSE_GET_TOP_IDS = 0x04;
-	public final static int PURPOSE_REFINE_TOP_IDS = 0x08;
-	public final static int PURPOSE_GET_FACETS = 0x10;
-	public final static int PURPOSE_REFINE_FACETS = 0x20;
-	public final static int PURPOSE_GET_FIELDS = 0x40;
-	public final static int PURPOSE_GET_HIGHLIGHTS = 0x80;
-	public final static int PURPOSE_GET_DEBUG = 0x100;
-	public final static int PURPOSE_GET_STATS = 0x200;
-	public final static int PURPOSE_GET_TERMS = 0x400;
-	public final static int PURPOSE_GET_TOP_GROUPS = 0x800;
-	public final static int PURPOSE_GET_MLT_RESULTS = 0x1000;
+  public final static int PURPOSE_PRIVATE         = 0x01;
+  public final static int PURPOSE_GET_TERM_DFS    = 0x02;
+  public final static int PURPOSE_GET_TOP_IDS     = 0x04;
+  public final static int PURPOSE_REFINE_TOP_IDS  = 0x08;
+  public final static int PURPOSE_GET_FACETS      = 0x10;
+  public final static int PURPOSE_REFINE_FACETS   = 0x20;
+  public final static int PURPOSE_GET_FIELDS      = 0x40;
+  public final static int PURPOSE_GET_HIGHLIGHTS  = 0x80;
+  public final static int PURPOSE_GET_DEBUG       =0x100;
+  public final static int PURPOSE_GET_STATS       =0x200;
+  public final static int PURPOSE_GET_TERMS       =0x400;
+  public final static int PURPOSE_GET_TOP_GROUPS  =0x800;
+  public final static int PURPOSE_GET_MLT_RESULTS =0x1000;
+  public final static int PURPOSE_REFINE_PIVOT_FACETS =0x2000;
+  public final static int PURPOSE_SET_TERM_STATS  =0x4000;
+  public final static int PURPOSE_GET_TERM_STATS  = 0x8000;
 
-	public int purpose; // the purpose of this request
+  public int purpose;  // the purpose of this request
 
-	public String[] shards; // the shards this request should be sent to, null for all
+  public String[] shards;  // the shards this request should be sent to, null for all
 
-	public ModifiableSolrParams params;
+  public ModifiableSolrParams params;
 
-	/** list of responses... filled out by framework */
-	public List<ShardResponse> responses = new ArrayList<ShardResponse>();
+  public ResponseBuilder rb;
 
-	/** actual shards to send the request to, filled out by framework */
-	public String[] actualShards;
+  /** list of responses... filled out by framework */
+  public List<ShardResponse> responses = new ArrayList<>();
 
-	/** may be null */
-	public String nodeName;
+  /** actual shards to send the request to, filled out by framework */
+  public String[] actualShards;
 
-	public ShardRequest() {
-	}
-	public ShardRequest(ShardRequest other) {
-		purpose = other.purpose;
-		shards = other.shards;
-		params = other.params;
-		actualShards = other.actualShards;
-	}
+  /** may be null */
+  public String nodeName;
 
-	// TODO: one could store a list of numbers to correlate where returned docs
-	// go in the top-level response rather than looking up by id...
-	// this would work well if we ever transitioned to using internal ids and
-	// didn't require a uniqueId
+  // TODO: one could store a list of numbers to correlate where returned docs
+  // go in the top-level response rather than looking up by id...
+  // this would work well if we ever transitioned to using internal ids and
+  // didn't require a uniqueId
 
-	@Override
-	public String toString() {
-		return "ShardRequest:{params=" + params + ", purpose=" + Integer.toHexString(purpose) + ", nResponses =" + responses.size() + "}";
-	}
+  @Override
+  public String toString() {
+    return "ShardRequest:{params=" + params
+            + ", purpose=" + Integer.toHexString(purpose)
+            + ", nResponses =" + responses.size()
+            + "}";
+  }
 }

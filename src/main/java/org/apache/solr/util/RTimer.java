@@ -47,7 +47,7 @@ public class RTimer {
   public RTimer() {
     time = 0;
     culmTime = 0;
-    children = new SimpleOrderedMap<RTimer>();
+    children = new SimpleOrderedMap<>();
     startTime = now();
     state = STARTED;
   }
@@ -88,14 +88,15 @@ public class RTimer {
     startTime = now();
   }
 
-  /** Get total elapsed time for this timer.
-   *
-   * Timer must be STOPped.
-   */
+  /** Get total elapsed time for this timer. */
   public double getTime() {
-    assert state == STOPPED;
-    return time;
-  }
+    if (state == STOPPED) return time;
+    else if (state == PAUSED) return culmTime;
+    else {
+      assert state == STARTED;
+      return culmTime + (now() - startTime);
+    }
+ }
 
   /** Create new subtimer with given name
    *
@@ -116,8 +117,8 @@ public class RTimer {
   }
 
   public NamedList asNamedList() {
-    NamedList<Object> m = new SimpleOrderedMap<Object>();
-    m.add( "time", time );
+    NamedList<Object> m = new SimpleOrderedMap<>();
+    m.add( "time", getTime() );
     if( children.size() > 0 ) {
       for( Map.Entry<String, RTimer> entry : children ) {
         m.add( entry.getKey(), entry.getValue().asNamedList() );

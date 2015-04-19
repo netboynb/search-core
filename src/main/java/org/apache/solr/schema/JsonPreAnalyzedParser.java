@@ -23,9 +23,9 @@ import org.apache.lucene.util.Attribute;
 import org.apache.lucene.util.AttributeSource;
 import org.apache.lucene.util.AttributeSource.State;
 import org.apache.lucene.util.BytesRef;
-import org.apache.noggit.JSONUtil;
-import org.apache.noggit.JSONWriter;
-import org.apache.noggit.ObjectBuilder;
+import org.noggit.JSONUtil;
+import org.noggit.JSONWriter;
+import org.noggit.ObjectBuilder;
 import org.apache.solr.common.util.Base64;
 import org.apache.solr.schema.PreAnalyzedField.ParseResult;
 import org.apache.solr.schema.PreAnalyzedField.PreAnalyzedParser;
@@ -208,7 +208,7 @@ public class JsonPreAnalyzedParser implements PreAnalyzedParser {
 
   @Override
   public String toFormattedString(Field f) throws IOException {
-    Map<String,Object> map = new LinkedHashMap<String,Object>();
+    Map<String,Object> map = new LinkedHashMap<>();
     map.put(VERSION_KEY, VERSION);
     if (f.fieldType().stored()) {
       String stringValue = f.stringValue();
@@ -222,18 +222,18 @@ public class JsonPreAnalyzedParser implements PreAnalyzedParser {
     }
     TokenStream ts = f.tokenStreamValue();
     if (ts != null) {
-      List<Map<String,Object>> tokens = new LinkedList<Map<String,Object>>();
+      List<Map<String,Object>> tokens = new LinkedList<>();
       while (ts.incrementToken()) {
         Iterator<Class<? extends Attribute>> it = ts.getAttributeClassesIterator();
         String cTerm = null;
         String tTerm = null;
-        Map<String,Object> tok = new TreeMap<String,Object>();
+        Map<String,Object> tok = new TreeMap<>();
         while (it.hasNext()) {
           Class<? extends Attribute> cl = it.next();
-          if (!ts.hasAttribute(cl)) {
+          Attribute att = ts.getAttribute(cl);
+          if (att == null) {
             continue;
           }
-          Attribute att = ts.getAttribute(cl);
           if (cl.isAssignableFrom(CharTermAttribute.class)) {
             CharTermAttribute catt = (CharTermAttribute)att;
             cTerm = new String(catt.buffer(), 0, catt.length());

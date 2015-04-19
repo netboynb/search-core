@@ -16,38 +16,25 @@
  */
 package org.apache.solr.update.processor;
 
+import static org.apache.solr.common.SolrException.ErrorCode.SERVER_ERROR;
+
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.ArrayList;
-import java.util.List;
+import java.util.Collection;
 import java.util.HashSet;
-
-import org.apache.solr.schema.IndexSchema;
-
-import org.apache.solr.core.SolrCore;
-import org.apache.solr.core.SolrResourceLoader;
-import org.apache.solr.util.plugin.SolrCoreAware;
-
-import org.apache.solr.common.util.NamedList;
-
-import org.apache.solr.common.SolrInputField;
-import org.apache.solr.common.SolrInputDocument;
+import java.util.List;
 
 import org.apache.solr.common.SolrException;
-import org.apache.solr.common.SolrException.ErrorCode;
-import static org.apache.solr.common.SolrException.ErrorCode.*;
-
+import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.SolrInputField;
+import org.apache.solr.common.util.NamedList;
+import org.apache.solr.core.SolrCore;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
-
 import org.apache.solr.update.AddUpdateCommand;
-
-import org.apache.solr.update.processor.FieldMutatingUpdateProcessorFactory;
-import org.apache.solr.update.processor.FieldMutatingUpdateProcessorFactory.SelectorParams;
 import org.apache.solr.update.processor.FieldMutatingUpdateProcessor.FieldNameSelector;
-
+import org.apache.solr.update.processor.FieldMutatingUpdateProcessorFactory.SelectorParams;
+import org.apache.solr.util.plugin.SolrCoreAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -115,7 +102,7 @@ public class CloneFieldUpdateProcessorFactory
   
   private SelectorParams srcInclusions = new SelectorParams();
   private Collection<SelectorParams> srcExclusions 
-    = new ArrayList<SelectorParams>();
+    = new ArrayList<>();
 
   private FieldNameSelector srcSelector = null;
   private String dest = null;
@@ -182,8 +169,7 @@ public class CloneFieldUpdateProcessorFactory
       }
     } else {
       // source better be one or more strings
-      srcInclusions.fieldName = new HashSet<String>
-        (FieldMutatingUpdateProcessorFactory.oneOrMany(args, "source"));
+      srcInclusions.fieldName = new HashSet<>(args.removeConfigArgs("source"));
     }
 
     
@@ -200,29 +186,15 @@ public class CloneFieldUpdateProcessorFactory
   @Override
   public void inform(final SolrCore core) {
     
-    final IndexSchema schema = core.getSchema();
-
     srcSelector = 
       FieldMutatingUpdateProcessor.createFieldNameSelector
-      (core.getResourceLoader(),
-       core.getSchema(),
-       srcInclusions.fieldName,
-       srcInclusions.typeName,
-       srcInclusions.typeClass,
-       srcInclusions.fieldRegex,
-       FieldMutatingUpdateProcessor.SELECT_NO_FIELDS);
+          (core.getResourceLoader(), core, srcInclusions, FieldMutatingUpdateProcessor.SELECT_NO_FIELDS);
 
     for (SelectorParams exc : srcExclusions) {
       srcSelector = FieldMutatingUpdateProcessor.wrap
         (srcSelector,
          FieldMutatingUpdateProcessor.createFieldNameSelector
-         (core.getResourceLoader(),
-          core.getSchema(),
-          exc.fieldName,
-          exc.typeName,
-          exc.typeClass,
-          exc.fieldRegex,
-          FieldMutatingUpdateProcessor.SELECT_NO_FIELDS));
+             (core.getResourceLoader(), core, exc, FieldMutatingUpdateProcessor.SELECT_NO_FIELDS));
     }
   }
 
@@ -243,8 +215,11 @@ public class CloneFieldUpdateProcessorFactory
         boolean modified = false;
         for (final String fname : doc.getFieldNames()) {
           if (! srcSelector.shouldMutate(fname)) continue;
+          
+          Collection<Object> srcFieldValues = doc.getFieldValues(fname);
+          if(srcFieldValues == null || srcFieldValues.isEmpty()) continue;
 
-          for (Object val : doc.getFieldValues(fname)) {
+          for (Object val : srcFieldValues) {
             // preserve existing dest boost (multiplicitive), ignore src boost
             destField.addValue(val, 1.0f);
           }

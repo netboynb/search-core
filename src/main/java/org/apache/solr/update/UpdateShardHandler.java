@@ -17,53 +17,85 @@ package org.apache.solr.update;
  * limitations under the License.
  */
 
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.http.client.HttpClient;
+import org.apache.http.conn.ClientConnectionManager;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.conn.PoolingClientConnectionManager;
+import org.apache.http.impl.conn.SchemeRegistryFactory;
 import org.apache.solr.client.solrj.impl.HttpClientUtil;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.util.ExecutorUtil;
-import org.apache.solr.util.DefaultSolrThreadFactory;
+import org.apache.solr.common.util.IOUtils;
+import org.apache.solr.common.util.SolrjNamedThreadFactory;
+import org.apache.solr.core.NodeConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class UpdateShardHandler {
   
   private static Logger log = LoggerFactory.getLogger(UpdateShardHandler.class);
   
-  private ThreadPoolExecutor cmdDistribExecutor = new ThreadPoolExecutor(0,
-      Integer.MAX_VALUE, 5, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(),
-      new DefaultSolrThreadFactory("cmdDistribExecutor"));
+  private ExecutorService updateExecutor = ExecutorUtil.newMDCAwareCachedThreadPool(
+      new SolrjNamedThreadFactory("updateExecutor"));
   
-  private final HttpClient client;
+  private PoolingClientConnectionManager clientConnectionManager;
+  
+  private final CloseableHttpClient client;
 
-  public UpdateShardHandler(int distribUpdateConnTimeout, int distribUpdateSoTimeout) {
+  @Deprecated
+  public UpdateShardHandler(NodeConfig cfg) {
+    this(cfg.getUpdateShardHandlerConfig());
+  }
+
+  public UpdateShardHandler(UpdateShardHandlerConfig cfg) {
+    
+    clientConnectionManager = new PoolingClientConnectionManager(SchemeRegistryFactory.createSystemDefault());
+    if (cfg != null ) {
+      clientConnectionManager.setMaxTotal(cfg.getMaxUpdateConnections());
+      clientConnectionManager.setDefaultMaxPerRoute(cfg.getMaxUpdateConnectionsPerHost());
+    }
+    
     ModifiableSolrParams params = new ModifiableSolrParams();
-    params.set(HttpClientUtil.PROP_MAX_CONNECTIONS, 500);
-    params.set(HttpClientUtil.PROP_MAX_CONNECTIONS_PER_HOST, 16);
-    params.set(HttpClientUtil.PROP_SO_TIMEOUT, distribUpdateSoTimeout);
-    params.set(HttpClientUtil.PROP_CONNECTION_TIMEOUT, distribUpdateConnTimeout);
-    client = HttpClientUtil.createClient(params);
+    if (cfg != null) {
+      params.set(HttpClientUtil.PROP_SO_TIMEOUT,
+          cfg.getDistributedSocketTimeout());
+      params.set(HttpClientUtil.PROP_CONNECTION_TIMEOUT,
+          cfg.getDistributedConnectionTimeout());
+    }
+    // in the update case, we want to do retries, and to use
+    // the default Solr retry handler that createClient will 
+    // give us
+    params.set(HttpClientUtil.PROP_USE_RETRY, true);
+    log.info("Creating UpdateShardHandler HTTP client with params: {}", params);
+    client = HttpClientUtil.createClient(params, clientConnectionManager);
   }
   
   
   public HttpClient getHttpClient() {
     return client;
   }
+
+  public ClientConnectionManager getConnectionManager() {
+    return clientConnectionManager;
+  }
   
-  public ThreadPoolExecutor getCmdDistribExecutor() {
-    return cmdDistribExecutor;
+  public ExecutorService getUpdateExecutor() {
+    return updateExecutor;
   }
 
   public void close() {
     try {
-      ExecutorUtil.shutdownNowAndAwaitTermination(cmdDistribExecutor);
-    } catch (Throwable e) {
+      ExecutorUtil.shutdownAndAwaitTermination(updateExecutor);
+    } catch (Exception e) {
       SolrException.log(log, e);
+    } finally {
+      IOUtils.closeQuietly(client);
+      clientConnectionManager.shutdown();
     }
-    client.getConnectionManager().shutdown();
   }
+
 }

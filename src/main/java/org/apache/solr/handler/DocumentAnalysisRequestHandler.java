@@ -17,6 +17,16 @@
 
 package org.apache.solr.handler;
 
+import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLStreamConstants;
+import javax.xml.stream.XMLStreamException;
+import javax.xml.stream.XMLStreamReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.Set;
+
 import org.apache.commons.io.IOUtils;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.util.BytesRef;
@@ -35,21 +45,16 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.schema.FieldType;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
+import org.apache.solr.util.EmptyEntityResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.xml.stream.XMLInputFactory;
-import javax.xml.stream.XMLStreamConstants;
-import javax.xml.stream.XMLStreamException;
-import javax.xml.stream.XMLStreamReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.*;
+import static org.apache.solr.common.params.CommonParams.NAME;
 
 /**
- * An analysis handler that provides a breakdown of the analysis process of provided docuemnts. This handler expects a
+ * An analysis handler that provides a breakdown of the analysis process of provided documents. This handler expects a
  * (single) content stream of the following format:
- * <p/>
+ * <br>
  * <pre><code>
  *  &lt;docs&gt;
  *      &lt;doc&gt;
@@ -62,14 +67,12 @@ import java.util.*;
  *      ...
  *  &lt;/docs&gt;
  * </code></pre>
- * <p/>
+ * <br>
  * <em><b>Note: Each document must contain a field which serves as the unique key. This key is used in the returned
- * response to assoicate an analysis breakdown to the analyzed document.</b></em>
- * <p/>
- * <p/>
- * <p/>
+ * response to associate an analysis breakdown to the analyzed document.</b></em>
+ * <p>
  * Like the {@link org.apache.solr.handler.FieldAnalysisRequestHandler}, this handler also supports query analysis by
- * sending either an "analysis.query" or "q" request paraemter that holds the query text to be analyzed. It also
+ * sending either an "analysis.query" or "q" request parameter that holds the query text to be analyzed. It also
  * supports the "analysis.showmatch" parameter which when set to {@code true}, all field tokens that match the query
  * tokens will be marked as a "match".
  *
@@ -90,6 +93,8 @@ public class DocumentAnalysisRequestHandler extends AnalysisRequestHandlerBase {
     super.init(args);
 
     inputFactory = XMLInputFactory.newInstance();
+    EmptyEntityResolver.configureXMLInputFactory(inputFactory);
+    inputFactory.setXMLReporter(xmllog);
     try {
       // The java 1.6 bundled stax parser (sjsxp) does not currently have a thread-safe
       // XMLInputFactory, as that implementation tries to cache and reuse the
@@ -103,7 +108,6 @@ public class DocumentAnalysisRequestHandler extends AnalysisRequestHandlerBase {
       // isimplementation specific.
       log.debug("Unable to set the 'reuse-instance' property for the input factory: " + inputFactory);
     }
-    inputFactory.setXMLReporter(xmllog);
   }
 
   /**
@@ -118,11 +122,6 @@ public class DocumentAnalysisRequestHandler extends AnalysisRequestHandlerBase {
   @Override
   public String getDescription() {
     return "Provides a breakdown of the analysis process of provided documents";
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/DocumentAnalysisRequestHandler.java $";
   }
 
 
@@ -196,11 +195,11 @@ public class DocumentAnalysisRequestHandler extends AnalysisRequestHandlerBase {
   NamedList<Object> handleAnalysisRequest(DocumentAnalysisRequest request, IndexSchema schema) {
 
     SchemaField uniqueKeyField = schema.getUniqueKeyField();
-    NamedList<Object> result = new SimpleOrderedMap<Object>();
+    NamedList<Object> result = new SimpleOrderedMap<>();
 
     for (SolrInputDocument document : request.getDocuments()) {
 
-      NamedList<NamedList> theTokens = new SimpleOrderedMap<NamedList>();
+      NamedList<NamedList> theTokens = new SimpleOrderedMap<>();
       result.add(document.getFieldValue(uniqueKeyField.getName()).toString(), theTokens);
       for (String name : document.getFieldNames()) {
 
@@ -210,7 +209,7 @@ public class DocumentAnalysisRequestHandler extends AnalysisRequestHandlerBase {
           continue;
         }
 
-        NamedList<Object> fieldTokens = new SimpleOrderedMap<Object>();
+        NamedList<Object> fieldTokens = new SimpleOrderedMap<>();
         theTokens.add(name, fieldTokens);
 
         FieldType fieldType = schema.getFieldType(name);
@@ -235,11 +234,11 @@ public class DocumentAnalysisRequestHandler extends AnalysisRequestHandlerBase {
           }
         }
 
-        Analyzer analyzer = fieldType.getAnalyzer();
+        Analyzer analyzer = fieldType.getIndexAnalyzer();
         AnalysisContext analysisContext = new AnalysisContext(fieldType, analyzer, termsToMatch);
         Collection<Object> fieldValues = document.getFieldValues(name);
         NamedList<NamedList<? extends Object>> indexTokens 
-          = new SimpleOrderedMap<NamedList<? extends Object>>();
+          = new SimpleOrderedMap<>();
         for (Object fieldValue : fieldValues) {
           indexTokens.add(String.valueOf(fieldValue), 
                           analyzeValue(fieldValue.toString(), analysisContext));
@@ -316,7 +315,7 @@ public class DocumentAnalysisRequestHandler extends AnalysisRequestHandlerBase {
 
           for (int i = 0; i < reader.getAttributeCount(); i++) {
             String attrName = reader.getAttributeLocalName(i);
-            if ("name".equals(attrName)) {
+            if (NAME.equals(attrName)) {
               fieldName = reader.getAttributeValue(i);
             }
           }

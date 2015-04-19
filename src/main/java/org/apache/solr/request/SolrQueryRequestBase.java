@@ -17,142 +17,162 @@
 
 package org.apache.solr.request;
 
-import java.util.HashMap;
-import java.util.Map;
-
+import org.apache.solr.response.SolrQueryResponse;
+import org.apache.solr.search.SolrIndexSearcher;
+import org.apache.solr.util.RTimer;
+import org.apache.solr.util.RefCounted;
+import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.ContentStream;
 import org.apache.solr.core.SolrCore;
-import org.apache.solr.schema.IndexSchema;
-import org.apache.solr.search.SolrIndexSearcher;
-import org.apache.solr.util.Constant;
-import org.apache.solr.util.RefCounted;
+
+import java.io.Closeable;
+import java.util.Map;
+import java.util.HashMap;
 
 /**
- * Base implementation of <code>SolrQueryRequest</code> that provides some convenience methods for
- * accessing parameters, and manages an IndexSearcher reference.
- * 
+ * Base implementation of <code>SolrQueryRequest</code> that provides some
+ * convenience methods for accessing parameters, and manages an IndexSearcher
+ * reference.
+ *
  * <p>
- * The <code>close()</code> method must be called on any instance of this class once it is no longer
- * in use.
+ * The <code>close()</code> method must be called on any instance of this
+ * class once it is no longer in use.
  * </p>
- * 
- * 
- * 
+ *
+ *
+ *
  */
-public abstract class SolrQueryRequestBase implements SolrQueryRequest {
-	protected final SolrCore core;
-	protected final SolrParams origParams;
-	protected SolrParams params;
-	protected Map<Object, Object> context;
-	protected Iterable<ContentStream> streams;
+public abstract class SolrQueryRequestBase implements SolrQueryRequest, Closeable {
+  protected final SolrCore core;
+  protected final SolrParams origParams;
+  protected volatile IndexSchema schema;
+  protected SolrParams params;
+  protected Map<Object,Object> context;
+  protected Iterable<ContentStream> streams;
+  protected Map<String,Object> json;
 
-	public SolrQueryRequestBase(SolrCore core, SolrParams params) {
-		this.core = core;
-		this.params = this.origParams = params;
-	}
+  private final RTimer requestTimer;
 
-	@Override
-	public Map<Object, Object> getContext() {
-		// SolrQueryRequest as a whole isn't thread safe, and this isn't either.
-		if(context == null)
-			context = new HashMap<Object, Object>();
-		return context;
-	}
+  public SolrQueryRequestBase(SolrCore core, SolrParams params, RTimer requestTimer) {
+    this.core = core;
+    this.schema = null == core ? null : core.getLatestSchema();
+    this.params = this.origParams = params;
+    this.requestTimer = requestTimer;
+  }
 
-	@Override
-	public SolrParams getParams() {
-		return params;
-	}
+  public SolrQueryRequestBase(SolrCore core, SolrParams params) {
+    this(core, params, new RTimer());
+  }
 
-	@Override
-	public SolrParams getOriginalParams() {
-		return origParams;
-	}
+  @Override
+  public Map<Object,Object> getContext() {
+    // SolrQueryRequest as a whole isn't thread safe, and this isn't either.
+    if (context==null) context = new HashMap<>();
+    return context;
+  }
 
-	@Override
-	public void setParams(SolrParams params) {
-		this.params = params;
-	}
+  @Override
+  public SolrParams getParams() {
+    return params;
+  }
 
-	protected final long startTime = System.currentTimeMillis();
+  @Override
+  public SolrParams getOriginalParams() {
+    return origParams;
+  }
 
-	// Get the start time of this request in milliseconds
-	@Override
-	public long getStartTime() {
-		return startTime;
-	}
+  @Override
+  public void setParams(SolrParams params) {
+    this.params = params;
+  }
 
-	// The index searcher associated with this request
-	protected RefCounted<SolrIndexSearcher> searcherHolder;
+  protected final long startTime=System.currentTimeMillis();
+  // Get the start time of this request in milliseconds
+  @Override
+  public long getStartTime() {
+    return startTime;
+  }
 
-	@Override
-	public SolrIndexSearcher getSearcher() {
-		if(core == null)
-			return null;//a request for a core admin will no have a core
-		// should this reach out and get a searcher from the core singleton, or
-		// should the core populate one in a factory method to create requests?
-		// or there could be a setSearcher() method that Solr calls
+  public RTimer getRequestTimer () {
+    return requestTimer;
+  }
 
-		//realtime core should reopen the reader
-		if(core.getName().startsWith(Constant.CORE_REALTIME)) {
-			if(searcherHolder != null)
-				searcherHolder.decref();
-			searcherHolder = core.getRealtimeSearcher();
-		}
-		//big core reader
-		if(searcherHolder == null) {
-			searcherHolder = core.getSearcher();
-		}
+  // The index searcher associated with this request
+  protected RefCounted<SolrIndexSearcher> searcherHolder;
+  @Override
+  public SolrIndexSearcher getSearcher() {
+    if(core == null) return null;//a request for a core admin will not have a core
+    // should this reach out and get a searcher from the core singleton, or
+    // should the core populate one in a factory method to create requests?
+    // or there could be a setSearcher() method that Solr calls
 
-		return searcherHolder.get();
-	}
+    if (searcherHolder==null) {
+      searcherHolder = core.getSearcher();
+    }
 
-	// The solr core (coordinator, etc) associated with this request
-	@Override
-	public SolrCore getCore() {
-		return core;
-	}
+    return searcherHolder.get();
+  }
 
-	// The index schema associated with this request
-	@Override
-	public IndexSchema getSchema() {
-		//a request for a core admin will no have a core
-		return core == null ? null : core.getSchema();
-	}
+  // The solr core (coordinator, etc) associated with this request
+  @Override
+  public SolrCore getCore() {
+    return core;
+  }
 
-	/**
-	 * Frees resources associated with this request, this method <b>must</b> be called when the
-	 * object is no longer in use.
-	 */
-	@Override
-	public void close() {
-		if(searcherHolder != null) {
-			searcherHolder.decref();
-			searcherHolder = null;
-		}
-	}
+  // The index schema associated with this request
+  @Override
+  public IndexSchema getSchema() {
+    //a request for a core admin will no have a core
+    return schema;
+  }
 
-	/**
-	 * A Collection of ContentStreams passed to the request
-	 */
-	@Override
-	public Iterable<ContentStream> getContentStreams() {
-		return streams;
-	}
+  @Override
+  public void updateSchemaToLatest() {
+    schema = core.getLatestSchema();
+  }
 
-	public void setContentStreams(Iterable<ContentStream> s) {
-		streams = s;
-	}
+  /**
+   * Frees resources associated with this request, this method <b>must</b>
+   * be called when the object is no longer in use.
+   */
+  @Override
+  public void close() {
+    if (searcherHolder!=null) {
+      searcherHolder.decref();
+      searcherHolder = null;
+    }
+  }
 
-	@Override
-	public String getParamString() {
-		return origParams.toString();
-	}
+  /** A Collection of ContentStreams passed to the request
+   */
+  @Override
+  public Iterable<ContentStream> getContentStreams() {
+    return streams; 
+  }
+  
+  public void setContentStreams( Iterable<ContentStream> s ) {
+    streams = s; 
+  }
 
-	@Override
-	public String toString() {
-		return this.getClass().getSimpleName() + '{' + params + '}';
-	}
+  @Override
+  public String getParamString() {
+    return origParams.toString();
+  }
+
+  @Override
+  public String toString() {
+    return this.getClass().getSimpleName() + '{' + params + '}';
+  }
+
+  @Override
+  public Map<String, Object> getJSON() {
+    return json;
+  }
+
+  @Override
+  public void setJSON(Map<String, Object> json) {
+    this.json = json;
+  }
 
 }

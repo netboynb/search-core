@@ -17,14 +17,16 @@
 
 package org.apache.solr.search;
 
-import java.io.Serializable;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URL;
 import java.util.Map;
- 
-import org.apache.solr.common.util.NamedList;
+
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.core.SolrInfoMBean.Category;
 import org.apache.solr.search.SolrCache.State;
+
+import static org.apache.solr.common.params.CommonParams.NAME;
 
 /**
  * Common base class of reusable functionality for SolrCaches
@@ -90,20 +92,12 @@ public abstract class SolrCacheBase {
    * Returns a "Hit Ratio" (ie: max of 1.00, not a percentage) suitable for 
    * display purposes.
    */
-  protected static String calcHitRatio(long lookups, long hits) {
-    if (lookups==0) return "0.00";
-    if (lookups==hits) return "1.00";
-    int hundredths = (int)(hits*100/lookups);   // rounded down
-    if (hundredths < 10) return "0.0" + hundredths;
-    return "0." + hundredths;
-
-    /*** code to produce a percent, if we want it...
-    int ones = (int)(hits*100 / lookups);
-    int tenths = (int)(hits*1000 / lookups) - ones*10;
-    return Integer.toString(ones) + '.' + tenths;
-    ***/
+  protected static float calcHitRatio(long lookups, long hits) {
+    return (lookups == 0) ? 0.0f :
+        BigDecimal.valueOf((double) hits / (double) lookups)
+            .setScale(2, RoundingMode.HALF_EVEN)
+            .floatValue();
   }
-
 
   public String getVersion() {
     return SolrCore.version;
@@ -119,9 +113,9 @@ public abstract class SolrCacheBase {
   
   public void init(Map<String, String> args, CacheRegenerator regenerator) {
     this.regenerator = regenerator;
-    state=State.CREATED;
-    name = (String) args.get("name");
-    autowarm = new AutoWarmCountRef((String)args.get("autowarmCount"));
+    state = State.CREATED;
+    name = args.get(NAME);
+    autowarm = new AutoWarmCountRef(args.get("autowarmCount"));
     
   }
   

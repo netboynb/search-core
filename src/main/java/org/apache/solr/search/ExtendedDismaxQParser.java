@@ -17,16 +17,9 @@
 
 package org.apache.solr.search;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
+import com.google.common.base.Function;
+import com.google.common.collect.Multimap;
+import com.google.common.collect.Multimaps;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.core.StopFilterFactory;
 import org.apache.lucene.analysis.util.TokenFilterFactory;
@@ -52,20 +45,51 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.schema.FieldType;
 import org.apache.solr.util.SolrPluginUtils;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 /**
  * Query parser that generates DisjunctionMaxQueries based on user configuration.
  * See Wiki page http://wiki.apache.org/solr/ExtendedDisMax
  */
 public class ExtendedDismaxQParser extends QParser {
-  
-  
+
   /**
    * A field we can't ever find in any schema, so we can safely tell
    * DisjunctionMaxQueryParser to use it as our defaultField, and
    * map aliases from it to any field in our schema.
    */
   private static String IMPOSSIBLE_FIELD_NAME = "\uFFFC\uFFFC\uFFFC";
-  
+
+  /**
+   * Helper function which returns the specified {@link FieldParams}' {@link FieldParams#getWordGrams()} value.
+   */
+  private static final Function<FieldParams, Integer> WORD_GRAM_EXTRACTOR = new Function<FieldParams, Integer>() {
+    @Override
+    public Integer apply(FieldParams input) {
+      return input.getWordGrams();
+    }
+  };
+
+  /**
+   * Helper function which returns the specified {@link FieldParams}' {@link FieldParams#getSlop()} value.
+   */
+  private static final Function<FieldParams, Integer> PHRASE_SLOP_EXTRACTOR = new Function<FieldParams, Integer>() {
+    @Override
+    public Integer apply(FieldParams input) {
+      return input.getSlop();
+    }
+  };
+
   /** shorten the class references for utilities */
   private static class U extends SolrPluginUtils {
     /* :NOOP */
@@ -100,6 +124,7 @@ public class ExtendedDismaxQParser extends QParser {
   private Query parsedUserQuery;
   private Query altUserQuery;
   private List<Query> boostQueries;
+  private boolean parsed = false;
   
   
   public ExtendedDismaxQParser(String qstr, SolrParams localParams, SolrParams params, SolrQueryRequest req) {
@@ -109,6 +134,8 @@ public class ExtendedDismaxQParser extends QParser {
   
   @Override
   public Query parse() throws SyntaxError {
+
+    parsed = true;
     
     /* the main query we will execute.  we disable the coord because
      * this query is an artificial construct
@@ -204,26 +231,33 @@ public class ExtendedDismaxQParser extends QParser {
     
     if (allPhraseFields.size() > 0) {
       // find non-field clauses
-      List<Clause> normalClauses = new ArrayList<Clause>(clauses.size());
+      List<Clause> normalClauses = new ArrayList<>(clauses.size());
       for (Clause clause : clauses) {
         if (clause.field != null || clause.isPhrase) continue;
         // check for keywords "AND,OR,TO"
         if (clause.isBareWord()) {
-          String s = clause.val.toString();
+          String s = clause.val;
           // avoid putting explicit operators in the phrase query
           if ("OR".equals(s) || "AND".equals(s) || "NOT".equals(s) || "TO".equals(s)) continue;
         }
         normalClauses.add(clause);
       }
-      
-      // full phrase and shingles
-      for (FieldParams phraseField: allPhraseFields) {
-        Map<String,Float> pf = new HashMap<String,Float>(1);
-        pf.put(phraseField.getField(),phraseField.getBoost());
-        addShingledPhraseQueries(query, normalClauses, pf,   
-            phraseField.getWordGrams(),config.tiebreaker, phraseField.getSlop());
+
+      // create a map of {wordGram, [phraseField]}
+      Multimap<Integer, FieldParams> phraseFieldsByWordGram = Multimaps.index(allPhraseFields, WORD_GRAM_EXTRACTOR);
+
+      // for each {wordGram, [phraseField]} entry, create and add shingled field queries to the main user query
+      for (Map.Entry<Integer, Collection<FieldParams>> phraseFieldsByWordGramEntry : phraseFieldsByWordGram.asMap().entrySet()) {
+
+        // group the fields within this wordGram collection by their associated slop (it's possible that the same
+        // field appears multiple times for the same wordGram count but with different slop values. In this case, we
+        // should take the *sum* of those phrase queries, rather than the max across them).
+        Multimap<Integer, FieldParams> phraseFieldsBySlop = Multimaps.index(phraseFieldsByWordGramEntry.getValue(), PHRASE_SLOP_EXTRACTOR);
+        for (Map.Entry<Integer, Collection<FieldParams>> phraseFieldsBySlopEntry : phraseFieldsBySlop.asMap().entrySet()) {
+          addShingledPhraseQueries(query, normalClauses, phraseFieldsBySlopEntry.getValue(),
+              phraseFieldsByWordGramEntry.getKey(), config.tiebreaker, phraseFieldsBySlopEntry.getKey());
+        }
       }
-      
     }
   }
 
@@ -407,7 +441,7 @@ public class ExtendedDismaxQParser extends QParser {
    * Parses all multiplicative boosts
    */
   protected List<ValueSource> getMultiplicativeBoosts() throws SyntaxError {
-    List<ValueSource> boosts = new ArrayList<ValueSource>();
+    List<ValueSource> boosts = new ArrayList<>();
     if (config.hasMultiplicativeBoosts()) {
       for (String boostStr : config.multBoosts) {
         if (boostStr==null || boostStr.length()==0) continue;
@@ -428,7 +462,7 @@ public class ExtendedDismaxQParser extends QParser {
    * Parses all function queries
    */
   protected List<Query> getBoostFunctions() throws SyntaxError {
-    List<Query> boostFunctions = new LinkedList<Query>();
+    List<Query> boostFunctions = new LinkedList<>();
     if (config.hasBoostFunctions()) {
       for (String boostFunc : config.boostFuncs) {
         if(null == boostFunc || "".equals(boostFunc)) continue;
@@ -450,7 +484,7 @@ public class ExtendedDismaxQParser extends QParser {
    * Parses all boost queries
    */
   protected List<Query> getBoostQueries() throws SyntaxError {
-    List<Query> boostQueries = new LinkedList<Query>();
+    List<Query> boostQueries = new LinkedList<>();
     if (config.hasBoostParams()) {
       for (String qs : config.boostParams) {
         if (qs.trim().length()==0) continue;
@@ -490,14 +524,13 @@ public class ExtendedDismaxQParser extends QParser {
    * @param fields Field =&gt; boost mappings for the phrase queries
    * @param shingleSize how big the phrases should be, 0 means a single phrase
    * @param tiebreaker tie breaker value for the DisjunctionMaxQueries
-   * @param slop slop value for the constructed phrases
    */
   protected void addShingledPhraseQueries(final BooleanQuery mainQuery, 
       final List<Clause> clauses,
-      final Map<String,Float> fields,
+      final Collection<FieldParams> fields,
       int shingleSize,
       final float tiebreaker,
-      final int slop) 
+      final int slop)
           throws SyntaxError {
     
     if (null == fields || fields.isEmpty() || 
@@ -506,12 +539,12 @@ public class ExtendedDismaxQParser extends QParser {
     
     if (0 == shingleSize) shingleSize = clauses.size();
     
-    final int goat = shingleSize-1; // :TODO: better name for var?
+    final int lastClauseIndex = shingleSize-1;
     
     StringBuilder userPhraseQuery = new StringBuilder();
-    for (int i=0; i < clauses.size() - goat; i++) {
+    for (int i=0; i < clauses.size() - lastClauseIndex; i++) {
       userPhraseQuery.append('"');
-      for (int j=0; j <= goat; j++) {
+      for (int j=0; j <= lastClauseIndex; j++) {
         userPhraseQuery.append(clauses.get(i + j).val);
         userPhraseQuery.append(' ');
       }
@@ -521,8 +554,8 @@ public class ExtendedDismaxQParser extends QParser {
     
     /* for parsing sloppy phrases using DisjunctionMaxQueries */
     ExtendedSolrQueryParser pp = createEdismaxQueryParser(this, IMPOSSIBLE_FIELD_NAME);
-    
-    pp.addAlias(IMPOSSIBLE_FIELD_NAME, tiebreaker, fields);
+
+    pp.addAlias(IMPOSSIBLE_FIELD_NAME, tiebreaker, getFieldBoosts(fields));
     pp.setPhraseSlop(slop);
     pp.setRemoveStopFilter(true);  // remove stop filter and keep stopwords
     
@@ -556,8 +589,20 @@ public class ExtendedDismaxQParser extends QParser {
       mainQuery.add(phrase, BooleanClause.Occur.SHOULD);
     }
   }
-  
-  
+
+  /**
+   * @return a {fieldName, fieldBoost} map for the given fields.
+   */
+  private Map<String, Float> getFieldBoosts(Collection<FieldParams> fields) {
+    Map<String, Float> fieldBoostMap = new LinkedHashMap<>(fields.size());
+
+    for (FieldParams field : fields) {
+      fieldBoostMap.put(field.getField(), field.getBoost());
+    }
+
+    return fieldBoostMap;
+  }
+
   @Override
   public String[] getDefaultHighlightFields() {
     return config.queryFields.keySet().toArray(new String[0]);
@@ -565,6 +610,8 @@ public class ExtendedDismaxQParser extends QParser {
   
   @Override
   public Query getHighlightQuery() throws SyntaxError {
+    if (!parsed)
+      parse();
     return parsedUserQuery == null ? altUserQuery : parsedUserQuery;
   }
   
@@ -676,7 +723,7 @@ public class ExtendedDismaxQParser extends QParser {
   }
   
   public List<Clause> splitIntoClauses(String s, boolean ignoreQuote) {
-    ArrayList<Clause> lst = new ArrayList<Clause>(4);
+    ArrayList<Clause> lst = new ArrayList<>(4);
     Clause clause;
     
     int pos=0;
@@ -793,7 +840,7 @@ public class ExtendedDismaxQParser extends QParser {
         // special syntax in a string isn't special
         clause.hasSpecialSyntax = false;        
       } else {
-        // an empty clause... must be just a + or - on it's own
+        // an empty clause... must be just a + or - on its own
         if (clause.val.length() == 0) {
           clause.syntaxError = true;
           if (clause.must != 0) {
@@ -812,7 +859,7 @@ public class ExtendedDismaxQParser extends QParser {
           clause.raw = s.substring(start, pos);
           // escape colons, except for "match all" query
           if(!"*:*".equals(clause.raw)) {
-            clause.raw = clause.raw.replaceAll(":", "\\\\:");
+            clause.raw = clause.raw.replaceAll("([^\\\\]):", "$1\\\\:");
           }
         } else {
           clause.raw = s.substring(start, pos);
@@ -859,7 +906,7 @@ public class ExtendedDismaxQParser extends QParser {
   }
   
   public static List<String> split(String s, boolean ignoreQuote) {
-    ArrayList<String> lst = new ArrayList<String>(4);
+    ArrayList<String> lst = new ArrayList<>(4);
     int pos=0, start=0, end=s.length();
     char inString=0;
     char ch=0;
@@ -937,7 +984,7 @@ public class ExtendedDismaxQParser extends QParser {
      * string, to Alias object containing the fields to use in our
      * DisjunctionMaxQuery and the tiebreaker to use.
      */
-    protected Map<String,Alias> aliases = new HashMap<String,Alias>(3);
+    protected Map<String,Alias> aliases = new HashMap<>(3);
     
     private QType type;
     private String field;
@@ -950,7 +997,7 @@ public class ExtendedDismaxQParser extends QParser {
     
     public ExtendedSolrQueryParser(QParser parser, String defaultField) {
       super(parser, defaultField);
-      // don't trust that our parent class won't ever change it's default
+      // don't trust that our parent class won't ever change its default
       setDefaultOperator(QueryParser.Operator.OR);
     }
     
@@ -1029,7 +1076,7 @@ public class ExtendedDismaxQParser extends QParser {
       Analyzer actualAnalyzer;
       if (removeStopFilter) {
         if (nonStopFilterAnalyzerPerField == null) {
-          nonStopFilterAnalyzerPerField = new HashMap<String, Analyzer>();
+          nonStopFilterAnalyzerPerField = new HashMap<>();
         }
         actualAnalyzer = nonStopFilterAnalyzerPerField.get(field);
         if (actualAnalyzer == null) {
@@ -1127,7 +1174,7 @@ public class ExtendedDismaxQParser extends QParser {
      * Validate there is no cyclic referencing in the aliasing
      */
     private void validateCyclicAliasing(String field) throws SyntaxError {
-      Set<String> set = new HashSet<String>();
+      Set<String> set = new HashSet<>();
       set.add(field);
       if(validateField(field, set)) {
         throw new SyntaxError("Field aliases lead to a cycle");
@@ -1155,7 +1202,7 @@ public class ExtendedDismaxQParser extends QParser {
     protected List<Query> getQueries(Alias a) throws SyntaxError {
       if (a == null) return null;
       if (a.fields.size()==0) return null;
-      List<Query> lst= new ArrayList<Query>(4);
+      List<Query> lst= new ArrayList<>(4);
       
       for (String f : a.fields.keySet()) {
         this.field = f;
@@ -1180,7 +1227,7 @@ public class ExtendedDismaxQParser extends QParser {
             Query query = super.getFieldQuery(field, val, type == QType.PHRASE);
             // A BooleanQuery is only possible from getFieldQuery if it came from
             // a single whitespace separated term. In this case, check the coordination
-            // factor on the query: if its enabled, that means we aren't a set of synonyms
+            // factor on the query: if it's enabled, that means we aren't a set of synonyms
             // but instead multiple terms from one whitespace-separated term, we must
             // apply minShouldMatch here so that it works correctly with other things
             // like aliasing.
@@ -1216,7 +1263,7 @@ public class ExtendedDismaxQParser extends QParser {
         return null;
       }
     }
-    
+
     private Analyzer noStopwordFilterAnalyzer(String fieldName) {
       FieldType ft = parser.getReq().getSchema().getFieldType(fieldName);
       Analyzer qa = ft.getQueryAnalyzer();
@@ -1225,7 +1272,7 @@ public class ExtendedDismaxQParser extends QParser {
       }
       
       TokenizerChain tcq = (TokenizerChain) qa;
-      Analyzer ia = ft.getAnalyzer();
+      Analyzer ia = ft.getIndexAnalyzer();
       if (ia == qa || !(ia instanceof TokenizerChain)) {
         return qa;
       }
@@ -1289,8 +1336,8 @@ public class ExtendedDismaxQParser extends QParser {
       }
       
       // Process dynamic patterns in userFields
-      ArrayList<DynamicField> dynUserFields = new ArrayList<DynamicField>();
-      ArrayList<DynamicField> negDynUserFields = new ArrayList<DynamicField>();
+      ArrayList<DynamicField> dynUserFields = new ArrayList<>();
+      ArrayList<DynamicField> negDynUserFields = new ArrayList<>();
       for(String f : userFieldsMap.keySet()) {
         if(f.contains("*")) {
           if(f.startsWith("-"))
@@ -1442,12 +1489,12 @@ public class ExtendedDismaxQParser extends QParser {
     public ExtendedDismaxConfiguration(SolrParams localParams,
         SolrParams params, SolrQueryRequest req) {
       solrParams = SolrParams.wrapDefaults(localParams, params);
-      minShouldMatch = DisMaxQParser.parseMinShouldMatch(req.getSchema(), solrParams);
+      minShouldMatch = DisMaxQParser.parseMinShouldMatch(req.getSchema(), solrParams); // req.getSearcher() here causes searcher refcount imbalance
       userFields = new UserFields(U.parseFieldBoosts(solrParams.getParams(DMP.UF)));
       try {
-        queryFields = DisMaxQParser.parseQueryFields(req.getSchema(), solrParams);
+        queryFields = DisMaxQParser.parseQueryFields(req.getSchema(), solrParams);  // req.getSearcher() here causes searcher refcount imbalance
       } catch (SyntaxError e) {
-        throw new RuntimeException();
+        throw new RuntimeException(e);
       }
       // Phrase slop array
       int pslop[] = new int[4];
@@ -1459,7 +1506,7 @@ public class ExtendedDismaxQParser extends QParser {
       List<FieldParams> phraseFields2 = U.parseFieldBoostsAndSlop(solrParams.getParams(DMP.PF2),2,pslop[2]);
       List<FieldParams> phraseFields3 = U.parseFieldBoostsAndSlop(solrParams.getParams(DMP.PF3),3,pslop[3]);
       
-      allPhraseFields = new ArrayList<FieldParams>(phraseFields.size() + phraseFields2.size() + phraseFields3.size());
+      allPhraseFields = new ArrayList<>(phraseFields.size() + phraseFields2.size() + phraseFields3.size());
       allPhraseFields.addAll(phraseFields);
       allPhraseFields.addAll(phraseFields2);
       allPhraseFields.addAll(phraseFields3);

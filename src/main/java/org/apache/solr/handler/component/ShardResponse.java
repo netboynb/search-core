@@ -1,5 +1,4 @@
 package org.apache.solr.handler.component;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -21,73 +20,81 @@ import org.apache.solr.client.solrj.SolrResponse;
 import org.apache.solr.common.SolrException;
 
 public final class ShardResponse {
-	private ShardRequest req;
-	private String shard;
-	private String nodeName;
-	private String shardAddress; // the specific shard that this response was received from
-	private int rspCode;
-	private Throwable exception;
-	private SolrResponse rsp;
+  private ShardRequest req;
+  private String shard;
+  private String nodeName;
+  private String shardAddress;  // the specific shard that this response was received from
+  private int rspCode;
+  private Throwable exception;
+  private SolrResponse rsp;
 
-	@Override
-	public String toString() {
-		return "ShardResponse:{shard=" + shard + ",shardAddress=" + shardAddress + "\n\trequest=" + req + "\n\tresponse=" + rsp
-				+ (exception == null ? "" : "\n\texception=" + SolrException.toStr(exception)) + "\n}";
-	}
+  @Override
+  public String toString() {
+    return "ShardResponse:{shard="+shard+",shardAddress="+shardAddress
+            +"\n\trequest=" + req
+            +"\n\tresponse=" + rsp
+            + (exception==null ? "" : "\n\texception="+ SolrException.toStr(exception))
+            +"\n}";
+  }
 
-	public Throwable getException() {
-		return exception;
-	}
+  public Throwable getException()
+  {
+    return exception;
+  }
 
-	public ShardRequest getShardRequest() {
-		return req;
-	}
+  public ShardRequest getShardRequest()
+  {
+    return req;
+  }
 
-	public SolrResponse getSolrResponse() {
-		return rsp;
-	}
+  public SolrResponse getSolrResponse()
+  {
+    return rsp;
+  }
 
-	public String getShard() {
-		return shard;
-	}
+  public String getShard()
+  {
+    return shard;
+  }
 
-	public String getNodeName() {
-		return nodeName;
-	}
+  public String getNodeName()
+  {
+    return nodeName;
+  }
+  
+  public void setShardRequest(ShardRequest rsp)
+  {
+    this.req = rsp;
+  }
 
-	public void setShardRequest(ShardRequest rsp) {
-		this.req = rsp;
-	}
+  public void setSolrResponse(SolrResponse rsp)
+  {
+    this.rsp = rsp;
+  }
 
-	public void setSolrResponse(SolrResponse rsp) {
-		this.rsp = rsp;
-	}
+  void setShard(String shard)
+  {
+    this.shard = shard;
+  }
 
-	public void setShard(String shard) {
-		this.shard = shard;
-	}
+  void setException(Throwable exception)
+  {
+    this.exception = exception;
+  }
 
-	public void setException(Throwable exception) {
-		this.exception = exception;
-	}
+  void setResponseCode(int rspCode)
+  {
+    this.rspCode = rspCode;
+  }
+  
+  void setNodeName(String nodeName) 
+  {
+    this.nodeName = nodeName;
+  }
 
-	public void setResponseCode(int rspCode) {
-		this.rspCode = rspCode;
-	}
+  /** What was the shard address that returned this response.  Example:  "http://localhost:8983/solr" */
+  public String getShardAddress() { return this.shardAddress; }
 
-	public void setNodeName(String nodeName) {
-		this.nodeName = nodeName;
-	}
-
-	/**
-	 * What was the shard address that returned this response. Example: "http://localhost:8983/solr"
-	 */
-	public String getShardAddress() {
-		return this.shardAddress;
-	}
-
-	public void setShardAddress(String addr) {
-		this.shardAddress = addr;
-	}
+  void setShardAddress(String addr) { this.shardAddress = addr; }
 
 }

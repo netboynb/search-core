@@ -24,6 +24,7 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -31,29 +32,30 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-import org.apache.lucene.document.Field;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.IndexReaderContext;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldComparator;
+import org.apache.lucene.search.LeafFieldComparator;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.grouping.GroupDocs;
 import org.apache.lucene.search.grouping.SearchGroup;
 import org.apache.lucene.search.grouping.TopGroups;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.CharsRef;
-import org.apache.lucene.util.UnicodeUtil;
+import org.apache.lucene.util.InPlaceMergeSorter;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.CommonParams;
+import org.apache.solr.common.params.CursorMarkParams;
 import org.apache.solr.common.params.GroupParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.MoreLikeThisParams;
@@ -66,7 +68,9 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.ResultContext;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.schema.FieldType;
+import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
+import org.apache.solr.search.CursorMark;
 import org.apache.solr.search.DocIterator;
 import org.apache.solr.search.DocList;
 import org.apache.solr.search.DocListAndSet;
@@ -75,6 +79,7 @@ import org.apache.solr.search.Grouping;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.QParserPlugin;
 import org.apache.solr.search.QueryParsing;
+import org.apache.solr.search.RankQuery;
 import org.apache.solr.search.ReturnFields;
 import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.search.SolrReturnFields;
@@ -99,7 +104,11 @@ import org.apache.solr.search.grouping.endresulttransformer.EndResultTransformer
 import org.apache.solr.search.grouping.endresulttransformer.GroupedEndResultTransformer;
 import org.apache.solr.search.grouping.endresulttransformer.MainEndResultTransformer;
 import org.apache.solr.search.grouping.endresulttransformer.SimpleEndResultTransformer;
+import org.apache.solr.search.stats.StatsCache;
 import org.apache.solr.util.SolrPluginUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /**
  * TODO!
@@ -110,7 +119,8 @@ import org.apache.solr.util.SolrPluginUtils;
 public class QueryComponent extends SearchComponent
 {
   public static final String COMPONENT_NAME = "query";
-  
+  private static final Logger LOG = LoggerFactory.getLogger(QueryComponent.class);
+
   @Override
   public void prepare(ResponseBuilder rb) throws IOException
   {
@@ -131,7 +141,7 @@ public class QueryComponent extends SearchComponent
     }
     rb.setFieldFlags( flags );
 
-    String defType = params.get(QueryParsing.DEFTYPE,QParserPlugin.DEFAULT_QTYPE);
+    String defType = params.get(QueryParsing.DEFTYPE, QParserPlugin.DEFAULT_QTYPE);
 
     // get it from the response builder to give a different component a chance
     // to set it.
@@ -147,19 +157,46 @@ public class QueryComponent extends SearchComponent
       Query q = parser.getQuery();
       if (q == null) {
         // normalize a null query to a query that matches nothing
-        q = new BooleanQuery();        
+        q = new BooleanQuery();
       }
+
       rb.setQuery( q );
+
+      String rankQueryString = rb.req.getParams().get(CommonParams.RQ);
+      if(rankQueryString != null) {
+        QParser rqparser = QParser.getParser(rankQueryString, defType, req);
+        Query rq = rqparser.getQuery();
+        if(rq instanceof RankQuery) {
+          RankQuery rankQuery = (RankQuery)rq;
+          rb.setRankQuery(rankQuery);
+          MergeStrategy mergeStrategy = rankQuery.getMergeStrategy();
+          if(mergeStrategy != null) {
+            rb.addMergeStrategy(mergeStrategy);
+            if(mergeStrategy.handlesMergeFields()) {
+              rb.mergeFieldHandler = mergeStrategy;
+            }
+          }
+        } else {
+          throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,"rq parameter must be a RankQuery");
+        }
+      }
+
       rb.setSortSpec( parser.getSort(true) );
       rb.setQparser(parser);
-      rb.setScoreDoc(parser.getPaging());
-      
+
+      final String cursorStr = rb.req.getParams().get(CursorMarkParams.CURSOR_MARK_PARAM);
+      if (null != cursorStr) {
+        final CursorMark cursorMark = new CursorMark(rb.req.getSchema(),
+                                                     rb.getSortSpec());
+        cursorMark.parseSerializedTotem(cursorStr);
+        rb.setCursorMark(cursorMark);
+      }
+
       String[] fqs = req.getParams().getParams(CommonParams.FQ);
       if (fqs!=null && fqs.length!=0) {
         List<Query> filters = rb.getFilters();
-        if (filters==null) {
-          filters = new ArrayList<Query>(fqs.length);
-        }
+        // if filters already exists, make a copy instead of modifying the original
+        filters = filters == null ? new ArrayList<Query>(fqs.length) : new ArrayList<>(filters);
         for (String fq : fqs) {
           if (fq != null && fq.trim().length()!=0) {
             QParser fqp = QParser.getParser(fq, null, req);
@@ -177,9 +214,31 @@ public class QueryComponent extends SearchComponent
       throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, e);
     }
 
-    boolean grouping = params.getBool(GroupParams.GROUP, false);
-    if (!grouping) {
-      return;
+    if (params.getBool(GroupParams.GROUP, false)) {
+      prepareGrouping(rb);
+    } else {
+      //Validate only in case of non-grouping search.
+      if(rb.getSortSpec().getCount() < 0) {
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "'rows' parameter cannot be negative");
+      }
+    }
+
+    //Input validation.
+    if (rb.getQueryCommand().getOffset() < 0) {
+      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "'start' parameter cannot be negative");
+    }
+  }
+
+  private void prepareGrouping(ResponseBuilder rb) throws IOException {
+
+    SolrQueryRequest req = rb.req;
+    SolrParams params = req.getParams();
+
+    if (null != rb.getCursorMark()) {
+      // It's hard to imagine, conceptually, what it would mean to combine
+      // grouping with a cursor - so for now we just don't allow the combination at all
+      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Can not use Grouping with " +
+                              CursorMarkParams.CURSOR_MARK_PARAM);
     }
 
     SolrIndexSearcher.QueryCommand cmd = rb.getQueryCommand();
@@ -196,7 +255,7 @@ public class QueryComponent extends SearchComponent
     // groupSort defaults to sort
     String groupSortStr = params.get(GroupParams.GROUP_SORT);
     //TODO: move weighting of sort
-    Sort sortWithinGroup = groupSortStr == null ?  groupSort : searcher.weightSort(QueryParsing.parseSort(groupSortStr, req));
+    Sort sortWithinGroup = groupSortStr == null ?  groupSort : searcher.weightSort(QueryParsing.parseSortSpec(groupSortStr, req).getSort());
     if (sortWithinGroup == null) {
       sortWithinGroup = Sort.RELEVANCE;
     }
@@ -234,6 +293,8 @@ public class QueryComponent extends SearchComponent
   @Override
   public void process(ResponseBuilder rb) throws IOException
   {
+    LOG.debug("process: {}", rb.req.getParams());
+  
     SolrQueryRequest req = rb.req;
     SolrQueryResponse rsp = rb.rsp;
     SolrParams params = req.getParams();
@@ -242,12 +303,26 @@ public class QueryComponent extends SearchComponent
     }
     SolrIndexSearcher searcher = req.getSearcher();
 
-    if (rb.getQueryCommand().getOffset() < 0) {
-      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "'start' parameter cannot be negative");
+    StatsCache statsCache = req.getCore().getStatsCache();
+    
+    int purpose = params.getInt(ShardParams.SHARDS_PURPOSE, ShardRequest.PURPOSE_GET_TOP_IDS);
+    if ((purpose & ShardRequest.PURPOSE_GET_TERM_STATS) != 0) {
+      statsCache.returnLocalStats(rb, searcher);
+      return;
+    }
+    // check if we need to update the local copy of global dfs
+    if ((purpose & ShardRequest.PURPOSE_SET_TERM_STATS) != 0) {
+      // retrieve from request and update local cache
+      statsCache.receiveGlobalStats(req);
     }
 
     // -1 as flag if not set.
-    long timeAllowed = (long)params.getInt( CommonParams.TIME_ALLOWED, -1 );
+    long timeAllowed = params.getLong(CommonParams.TIME_ALLOWED, -1L);
+    if (null != rb.getCursorMark() && 0 < timeAllowed) {
+      // fundamentally incompatible
+      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Can not search using both " +
+                              CursorMarkParams.CURSOR_MARK_PARAM + " and " + CommonParams.TIME_ALLOWED);
+    }
 
     // Optional: This could also be implemented by the top-level searcher sending
     // a filter that lists the ids... that would be transparent to
@@ -255,7 +330,7 @@ public class QueryComponent extends SearchComponent
     // too if desired).
     String ids = params.get(ShardParams.IDS);
     if (ids != null) {
-      SchemaField idField = req.getSchema().getUniqueKeyField();
+      SchemaField idField = searcher.getSchema().getUniqueKeyField();
       List<String> idArr = StrUtils.splitSmart(ids, ",", true);
       int[] luceneIds = new int[idArr.size()];
       int docs = 0;
@@ -270,14 +345,14 @@ public class QueryComponent extends SearchComponent
       res.docList = new DocSlice(0, docs, luceneIds, null, docs, 0);
       if (rb.isNeedDocSet()) {
         // TODO: create a cache for this!
-        List<Query> queries = new ArrayList<Query>();
+        List<Query> queries = new ArrayList<>();
         queries.add(rb.getQuery());
         List<Query> filters = rb.getFilters();
         if (filters != null) queries.addAll(filters);
         res.docSet = searcher.getDocSet(queries);
       }
       rb.setResults(res);
-      
+
       ResultContext ctx = new ResultContext();
       ctx.docs = rb.getResults().docList;
       ctx.query = null; // anything?
@@ -287,6 +362,9 @@ public class QueryComponent extends SearchComponent
 
     SolrIndexSearcher.QueryCommand cmd = rb.getQueryCommand();
     cmd.setTimeAllowed(timeAllowed);
+
+    req.getContext().put(SolrIndexSearcher.STATS_SOURCE, statsCache.get(req));
+    
     SolrIndexSearcher.QueryResult result = new SolrIndexSearcher.QueryResult();
 
     //
@@ -332,9 +410,9 @@ public class QueryComponent extends SearchComponent
               topGroupsParam = new String[0];
             }
 
-            List<SearchGroup<BytesRef>> topGroups = new ArrayList<SearchGroup<BytesRef>>(topGroupsParam.length);
+            List<SearchGroup<BytesRef>> topGroups = new ArrayList<>(topGroupsParam.length);
             for (String topGroup : topGroupsParam) {
-              SearchGroup<BytesRef> searchGroup = new SearchGroup<BytesRef>();
+              SearchGroup<BytesRef> searchGroup = new SearchGroup<>();
               if (!topGroup.equals(TopGroupsShardRequestFactory.GROUP_NULL_VALUE)) {
                 searchGroup.groupValue = new BytesRef(searcher.getSchema().getField(field).getType().readableToIndexed(topGroup));
               }
@@ -437,9 +515,8 @@ public class QueryComponent extends SearchComponent
     }
 
     // normal search result
-    searcher.search(result,cmd);
-    rb.setResult( result );
-
+    searcher.search(result, cmd);
+    rb.setResult(result);
 
     ResultContext ctx = new ResultContext();
     ctx.docs = rb.getResults().docList;
@@ -447,7 +524,19 @@ public class QueryComponent extends SearchComponent
     rsp.add("response", ctx);
     rsp.getToLog().add("hits", rb.getResults().docList.matches());
 
-    doFieldSortValues(rb, searcher);
+    if ( ! rb.req.getParams().getBool(ShardParams.IS_SHARD,false) ) {
+      if (null != rb.getNextCursorMark()) {
+        rb.rsp.add(CursorMarkParams.CURSOR_MARK_NEXT,
+                   rb.getNextCursorMark().getSerializedTotem());
+      }
+    }
+
+    if(rb.mergeFieldHandler != null) {
+      rb.mergeFieldHandler.handleMergeFields(rb, searcher);
+    } else {
+      doFieldSortValues(rb, searcher);
+    }
+
     doPrefetch(rb);
   }
 
@@ -455,19 +544,17 @@ public class QueryComponent extends SearchComponent
   {
     SolrQueryRequest req = rb.req;
     SolrQueryResponse rsp = rb.rsp;
-    final CharsRef spare = new CharsRef();
     // The query cache doesn't currently store sort field values, and SolrIndexSearcher doesn't
     // currently have an option to return sort field values.  Because of this, we
     // take the documents given and re-derive the sort values.
+    //
+    // TODO: See SOLR-5595
     boolean fsv = req.getParams().getBool(ResponseBuilder.FIELD_SORT_VALUES,false);
     if(fsv){
-      Sort sort = searcher.weightSort(rb.getSortSpec().getSort());
-      SortField[] sortFields = sort==null ? new SortField[]{SortField.FIELD_SCORE} : sort.getSort();
-      NamedList<Object[]> sortVals = new NamedList<Object[]>(); // order is important for the sort fields
-      Field field = new StringField("dummy", "", Field.Store.NO); // a dummy Field
+      NamedList<Object[]> sortVals = new NamedList<>(); // order is important for the sort fields
       IndexReaderContext topReaderContext = searcher.getTopReaderContext();
-      List<AtomicReaderContext> leaves = topReaderContext.leaves();
-      AtomicReaderContext currentLeaf = null;
+      List<LeafReaderContext> leaves = topReaderContext.leaves();
+      LeafReaderContext currentLeaf = null;
       if (leaves.size()==1) {
         // if there is a single segment, use that subReader and avoid looking up each time
         currentLeaf = leaves.get(0);
@@ -478,30 +565,57 @@ public class QueryComponent extends SearchComponent
 
       // sort ids from lowest to highest so we can access them in order
       int nDocs = docList.size();
-      long[] sortedIds = new long[nDocs];
-      DocIterator it = rb.getResults().docList.iterator();
+      final long[] sortedIds = new long[nDocs];
+      final float[] scores = new float[nDocs]; // doc scores, parallel to sortedIds
+      DocList docs = rb.getResults().docList;
+      DocIterator it = docs.iterator();
       for (int i=0; i<nDocs; i++) {
         sortedIds[i] = (((long)it.nextDoc()) << 32) | i;
+        scores[i] = docs.hasScores() ? it.score() : Float.NaN;
       }
-      Arrays.sort(sortedIds);
 
+      // sort ids and scores together
+      new InPlaceMergeSorter() {
+        @Override
+        protected void swap(int i, int j) {
+          long tmpId = sortedIds[i];
+          float tmpScore = scores[i];
+          sortedIds[i] = sortedIds[j];
+          scores[i] = scores[j];
+          sortedIds[j] = tmpId;
+          scores[j] = tmpScore;
+        }
 
-      for (SortField sortField: sortFields) {
+        @Override
+        protected int compare(int i, int j) {
+          return Long.compare(sortedIds[i], sortedIds[j]);
+        }
+      }.sort(0, sortedIds.length);
+
+      SortSpec sortSpec = rb.getSortSpec();
+      Sort sort = searcher.weightSort(sortSpec.getSort());
+      SortField[] sortFields = sort==null ? new SortField[]{SortField.FIELD_SCORE} : sort.getSort();
+      List<SchemaField> schemaFields = sortSpec.getSchemaFields();
+
+      for (int fld = 0; fld < schemaFields.size(); fld++) {
+        SchemaField schemaField = schemaFields.get(fld);
+        FieldType ft = null == schemaField? null : schemaField.getType();
+        SortField sortField = sortFields[fld];
+
         SortField.Type type = sortField.getType();
+        // :TODO: would be simpler to always serialize every position of SortField[]
         if (type==SortField.Type.SCORE || type==SortField.Type.DOC) continue;
 
-        FieldComparator comparator = null;
-
-        String fieldname = sortField.getField();
-        FieldType ft = fieldname==null ? null : req.getSchema().getFieldTypeNoEx(fieldname);
-
+        FieldComparator<?> comparator = null;
+        LeafFieldComparator leafComparator = null;
         Object[] vals = new Object[nDocs];
-        
 
         int lastIdx = -1;
         int idx = 0;
 
-        for (long idAndPos : sortedIds) {
+        for (int i = 0; i < sortedIds.length; ++i) {
+          long idAndPos = sortedIds[i];
+          float score = scores[i];
           int doc = (int)(idAndPos >>> 32);
           int position = (int)idAndPos;
 
@@ -516,37 +630,18 @@ public class QueryComponent extends SearchComponent
 
           if (comparator == null) {
             comparator = sortField.getComparator(1,0);
-            comparator = comparator.setNextReader(currentLeaf);
+            leafComparator = comparator.getLeafComparator(currentLeaf);
           }
 
           doc -= currentLeaf.docBase;  // adjust for what segment this is in
-          comparator.copy(0, doc);
+          leafComparator.setScorer(new FakeScorer(doc, score));
+          leafComparator.copy(0, doc);
           Object val = comparator.value(0);
-
-          // Sortable float, double, int, long types all just use a string
-          // comparator. For these, we need to put the type into a readable
-          // format.  One reason for this is that XML can't represent all
-          // string values (or even all unicode code points).
-          // indexedToReadable() should be a no-op and should
-          // thus be harmless anyway (for all current ways anyway)
-          if (val instanceof String) {
-            field.setStringValue((String)val);
-            val = ft.toObject(field);
-          }
-
-          // Must do the same conversion when sorting by a
-          // String field in Lucene, which returns the terms
-          // data as BytesRef:
-          if (val instanceof BytesRef) {
-            UnicodeUtil.UTF8toUTF16((BytesRef)val, spare);
-            field.setStringValue(spare.toString());
-            val = ft.toObject(field);
-          }
-
+          if (null != ft) val = ft.marshalSortValue(val);
           vals[position] = val;
         }
 
-        sortVals.add(fieldname, vals);
+        sortVals.add(sortField.getField(), vals);
       }
 
       rsp.add("sort_values", sortVals);
@@ -563,7 +658,7 @@ public class QueryComponent extends SearchComponent
     }
   }
 
-  @Override  
+  @Override
   public int distributedProcess(ResponseBuilder rb) throws IOException {
     if (rb.grouping()) {
       return groupedDistributedProcess(rb);
@@ -579,7 +674,7 @@ public class QueryComponent extends SearchComponent
     if (rb.stage < ResponseBuilder.STAGE_PARSE_QUERY) {
       nextStage = ResponseBuilder.STAGE_PARSE_QUERY;
     } else if (rb.stage == ResponseBuilder.STAGE_PARSE_QUERY) {
-      createDistributedIdf(rb);
+      createDistributedStats(rb);
       nextStage = ResponseBuilder.STAGE_TOP_GROUPS;
     } else if (rb.stage < ResponseBuilder.STAGE_TOP_GROUPS) {
       nextStage = ResponseBuilder.STAGE_TOP_GROUPS;
@@ -610,7 +705,7 @@ public class QueryComponent extends SearchComponent
     if (rb.stage < ResponseBuilder.STAGE_PARSE_QUERY)
       return ResponseBuilder.STAGE_PARSE_QUERY;
     if (rb.stage == ResponseBuilder.STAGE_PARSE_QUERY) {
-      createDistributedIdf(rb);
+      createDistributedStats(rb);
       return ResponseBuilder.STAGE_EXECUTE_QUERY;
     }
     if (rb.stage < ResponseBuilder.STAGE_EXECUTE_QUERY) return ResponseBuilder.STAGE_EXECUTE_QUERY;
@@ -619,7 +714,7 @@ public class QueryComponent extends SearchComponent
       return ResponseBuilder.STAGE_GET_FIELDS;
     }
     if (rb.stage < ResponseBuilder.STAGE_GET_FIELDS) return ResponseBuilder.STAGE_GET_FIELDS;
-    if (rb.stage == ResponseBuilder.STAGE_GET_FIELDS) {
+    if (rb.stage == ResponseBuilder.STAGE_GET_FIELDS && !rb.onePassDistributedQuery) {
       createRetrieveDocs(rb);
       return ResponseBuilder.STAGE_DONE;
     }
@@ -655,6 +750,10 @@ public class QueryComponent extends SearchComponent
       mergeIds(rb, sreq);
     }
 
+    if ((sreq.purpose & ShardRequest.PURPOSE_GET_TERM_STATS) != 0) {
+      updateStats(rb, sreq);
+    }
+
     if ((sreq.purpose & ShardRequest.PURPOSE_GET_FIELDS) != 0) {
       returnFields(rb, sreq);
     }
@@ -683,7 +782,7 @@ public class QueryComponent extends SearchComponent
       for (String field : groupSpec.getFields()) {
         rb.mergedTopGroups.put(field, new TopGroups(null, null, 0, 0, new GroupDocs[]{}, Float.NaN));
       }
-      rb.resultIds = new HashMap<Object, ShardDoc>();
+      rb.resultIds = new HashMap<>();
     }
 
     EndResultTransformer.SolrDocumentSource solrDocumentSource = new EndResultTransformer.SolrDocumentSource() {
@@ -705,7 +804,7 @@ public class QueryComponent extends SearchComponent
     } else {
       return;
     }
-    Map<String, Object> combinedMap = new LinkedHashMap<String, Object>();
+    Map<String, Object> combinedMap = new LinkedHashMap<>();
     combinedMap.putAll(rb.mergedTopGroups);
     combinedMap.putAll(rb.mergedQueryCommandResults);
     endResultTransformer.transform(combinedMap, rb, solrDocumentSource);
@@ -722,15 +821,45 @@ public class QueryComponent extends SearchComponent
     }
 
     rb.rsp.add("response", rb._responseDocs);
+    if (null != rb.getNextCursorMark()) {
+      rb.rsp.add(CursorMarkParams.CURSOR_MARK_NEXT,
+                 rb.getNextCursorMark().getSerializedTotem());
+    }
   }
 
-  private void createDistributedIdf(ResponseBuilder rb) {
-    // TODO
+  private void createDistributedStats(ResponseBuilder rb) {
+    StatsCache cache = rb.req.getCore().getStatsCache();
+    if ( (rb.getFieldFlags() & SolrIndexSearcher.GET_SCORES)!=0 || rb.getSortSpec().includesScore()) {
+      ShardRequest sreq = cache.retrieveStatsRequest(rb);
+      if (sreq != null) {
+        rb.addRequest(this, sreq);
+      }
+    }
+  }
+
+  private void updateStats(ResponseBuilder rb, ShardRequest sreq) {
+    StatsCache cache = rb.req.getCore().getStatsCache();
+    cache.mergeToGlobalStats(rb.req, sreq.responses);
   }
 
   private void createMainQuery(ResponseBuilder rb) {
     ShardRequest sreq = new ShardRequest();
     sreq.purpose = ShardRequest.PURPOSE_GET_TOP_IDS;
+
+    String keyFieldName = rb.req.getSchema().getUniqueKeyField().getName();
+
+    // one-pass algorithm if only id and score fields are requested, but not if fl=score since that's the same as fl=*,score
+    ReturnFields fields = rb.rsp.getReturnFields();
+
+    // distrib.singlePass=true forces a one-pass query regardless of requested fields
+    boolean distribSinglePass = rb.req.getParams().getBool(ShardParams.DISTRIB_SINGLE_PASS, false);
+
+    if(distribSinglePass || (fields != null && fields.wantsField(keyFieldName)
+        && fields.getRequestedFieldNames() != null  
+        && (!fields.hasPatternMatching() && Arrays.asList(keyFieldName, "score").containsAll(fields.getRequestedFieldNames())))) {
+      sreq.purpose |= ShardRequest.PURPOSE_GET_FIELDS;
+      rb.onePassDistributedQuery = true;
+    }
 
     sreq.params = new ModifiableSolrParams(rb.req.getParams());
     // TODO: base on current params or original params?
@@ -757,24 +886,70 @@ public class QueryComponent extends SearchComponent
       sreq.params.set(CommonParams.ROWS, rb.getSortSpec().getOffset() + rb.getSortSpec().getCount());
     }
 
-    // in this first phase, request only the unique key field
-    // and any fields needed for merging.
     sreq.params.set(ResponseBuilder.FIELD_SORT_VALUES,"true");
 
-    if ( (rb.getFieldFlags() & SolrIndexSearcher.GET_SCORES)!=0 || rb.getSortSpec().includesScore()) {
-      sreq.params.set(CommonParams.FL, rb.req.getSchema().getUniqueKeyField().getName() + ",score");
+    boolean shardQueryIncludeScore = (rb.getFieldFlags() & SolrIndexSearcher.GET_SCORES) != 0 || rb.getSortSpec().includesScore();
+    StringBuilder additionalFL = new StringBuilder();
+    boolean additionalAdded = false;
+    if (distribSinglePass)  {
+      String[] fls = rb.req.getParams().getParams(CommonParams.FL);
+      if (fls != null && fls.length > 0 && (fls.length != 1 || !fls[0].isEmpty())) {
+        // If the outer request contains actual FL's use them...
+        sreq.params.set(CommonParams.FL, fls);
+        if (!fields.wantsField(keyFieldName))  {
+          additionalAdded = addFL(additionalFL, keyFieldName, additionalAdded);
+        }
+      } else {
+        // ... else we need to explicitly ask for all fields, because we are going to add
+        // additional fields below
+        sreq.params.set(CommonParams.FL, "*");
+      }
+      if (!fields.wantsScore() && shardQueryIncludeScore) {
+        additionalAdded = addFL(additionalFL, "score", additionalAdded);
+      }
     } else {
-      sreq.params.set(CommonParams.FL, rb.req.getSchema().getUniqueKeyField().getName());      
+      // reset so that only unique key is requested in shard requests
+      sreq.params.set(CommonParams.FL, rb.req.getSchema().getUniqueKeyField().getName());
+      if (shardQueryIncludeScore) {
+        additionalAdded = addFL(additionalFL, "score", additionalAdded);
+      }
     }
+
+    // TODO: should this really sendGlobalDfs if just includeScore?
+
+    if (shardQueryIncludeScore) {
+      StatsCache statsCache = rb.req.getCore().getStatsCache();
+      statsCache.sendGlobalStats(rb, sreq);
+    }
+
+    if (additionalAdded) sreq.params.add(CommonParams.FL, additionalFL.toString());
 
     rb.addRequest(this, sreq);
   }
+  
+  private boolean addFL(StringBuilder fl, String field, boolean additionalAdded) {
+    if (additionalAdded) fl.append(",");
+    fl.append(field);
+    return true;
+  }
 
+  private void mergeIds(ResponseBuilder rb, ShardRequest sreq) {
+      List<MergeStrategy> mergeStrategies = rb.getMergeStrategies();
+      if(mergeStrategies != null) {
+        Collections.sort(mergeStrategies, MergeStrategy.MERGE_COMP);
+        boolean idsMerged = false;
+        for(MergeStrategy mergeStrategy : mergeStrategies) {
+          mergeStrategy.merge(rb, sreq);
+          if(mergeStrategy.mergesIds()) {
+            idsMerged = true;
+          }
+        }
 
+        if(idsMerged) {
+          return; //ids were merged above so return.
+        }
+      }
 
-
-
-	public void mergeIds(ResponseBuilder rb, ShardRequest sreq) {
       SortSpec ss = rb.getSortSpec();
       Sort sort = ss.getSort();
 
@@ -784,20 +959,21 @@ public class QueryComponent extends SearchComponent
         sortFields = new SortField[]{SortField.FIELD_SCORE};
       }
  
-      SchemaField uniqueKeyField = rb.req.getSchema().getUniqueKeyField();
+      IndexSchema schema = rb.req.getSchema();
+      SchemaField uniqueKeyField = schema.getUniqueKeyField();
 
 
       // id to shard mapping, to eliminate any accidental dups
-      HashMap<Object,String> uniqueDoc = new HashMap<Object,String>();    
+      HashMap<Object,String> uniqueDoc = new HashMap<>();
 
       // Merge the docs via a priority queue so we don't have to sort *all* of the
       // documents... we only need to order the top (rows+start)
       ShardFieldSortedHitQueue queue;
-      queue = new ShardFieldSortedHitQueue(sortFields, ss.getOffset() + ss.getCount());
+      queue = new ShardFieldSortedHitQueue(sortFields, ss.getOffset() + ss.getCount(), rb.req.getSearcher());
 
       NamedList<Object> shardInfo = null;
       if(rb.req.getParams().getBool(ShardParams.SHARDS_INFO, false)) {
-        shardInfo = new SimpleOrderedMap<Object>();
+        shardInfo = new SimpleOrderedMap<>();
         rb.rsp.getValues().add(ShardParams.SHARDS_INFO,shardInfo);
       }
       
@@ -808,7 +984,7 @@ public class QueryComponent extends SearchComponent
         SolrDocumentList docs = null;
 
         if(shardInfo!=null) {
-          SimpleOrderedMap<Object> nl = new SimpleOrderedMap<Object>();
+          SimpleOrderedMap<Object> nl = new SimpleOrderedMap<>();
           
           if (srsp.getException() != null) {
             Throwable t = srsp.getException();
@@ -819,11 +995,15 @@ public class QueryComponent extends SearchComponent
             StringWriter trace = new StringWriter();
             t.printStackTrace(new PrintWriter(trace));
             nl.add("trace", trace.toString() );
+            if (srsp.getShardAddress() != null) {
+              nl.add("shardAddress", srsp.getShardAddress());
+            }
           }
           else {
             docs = (SolrDocumentList)srsp.getSolrResponse().getResponse().get("response");
             nl.add("numFound", docs.getNumFound());
             nl.add("maxScore", docs.getMaxScore());
+            nl.add("shardAddress", srsp.getShardAddress());
           }
           if(srsp.getSolrResponse()!=null) {
             nl.add("time", srsp.getSolrResponse().getElapsedTime());
@@ -833,6 +1013,7 @@ public class QueryComponent extends SearchComponent
         }
         // now that we've added the shard info, let's only proceed if we have no error.
         if (srsp.getException() != null) {
+          partialResults = true;
           continue;
         }
 
@@ -852,6 +1033,7 @@ public class QueryComponent extends SearchComponent
         numFound += docs.getNumFound();
 
         NamedList sortFieldValues = (NamedList)(srsp.getSolrResponse().getResponse().get("sort_values"));
+        NamedList unmarshalledSortFieldValues = unmarshalSortValues(ss, sortFieldValues, schema);
 
         // go through every doc in this response, construct a ShardDoc, and
         // put it in the priority queue so it can be ordered.
@@ -888,7 +1070,7 @@ public class QueryComponent extends SearchComponent
             }
           }
 
-          shardDoc.sortFieldValues = sortFieldValues;
+          shardDoc.sortFieldValues = unmarshalledSortFieldValues;
 
           queue.insertWithOverflow(shardDoc);
         } // end for-each-doc-in-response
@@ -900,7 +1082,7 @@ public class QueryComponent extends SearchComponent
       int resultSize = queue.size() - ss.getOffset();
       resultSize = Math.max(0, resultSize);  // there may not be any docs in range
 
-      Map<Object,ShardDoc> resultIds = new HashMap<Object,ShardDoc>();
+      Map<Object,ShardDoc> resultIds = new HashMap<>();
       for (int i=resultSize-1; i>=0; i--) {
         ShardDoc shardDoc = queue.pop();
         shardDoc.positionInResponse = i;
@@ -925,9 +1107,106 @@ public class QueryComponent extends SearchComponent
       // TODO: use ResponseBuilder (w/ comments) or the request context?
       rb.resultIds = resultIds;
       rb._responseDocs = responseDocs;
+
+      populateNextCursorMarkFromMergedShards(rb);
+
       if (partialResults) {
-        rb.rsp.getResponseHeader().add( "partialResults", Boolean.TRUE );
+        if(rb.rsp.getResponseHeader().get("partialResults") == null) {
+          rb.rsp.getResponseHeader().add("partialResults", Boolean.TRUE);
+        }
       }
+  }
+
+  /**
+   * Inspects the state of the {@link ResponseBuilder} and populates the next 
+   * {@link ResponseBuilder#setNextCursorMark} as appropriate based on the merged 
+   * sort values from individual shards
+   *
+   * @param rb A <code>ResponseBuilder</code> that already contains merged 
+   *           <code>ShardDocs</code> in <code>resultIds</code>, may or may not be 
+   *           part of a Cursor based request (method will NOOP if not needed)
+   */
+  private void populateNextCursorMarkFromMergedShards(ResponseBuilder rb) {
+
+    final CursorMark lastCursorMark = rb.getCursorMark();
+    if (null == lastCursorMark) {
+      // Not a cursor based request
+      return; // NOOP
+    }
+
+    assert null != rb.resultIds : "resultIds was not set in ResponseBuilder";
+
+    Collection<ShardDoc> docsOnThisPage = rb.resultIds.values();
+
+    if (0 == docsOnThisPage.size()) {
+      // nothing more matching query, re-use existing totem so user can "resume" 
+      // search later if it makes sense for this sort.
+      rb.setNextCursorMark(lastCursorMark);
+      return;
+    }
+
+    ShardDoc lastDoc = null;
+    // ShardDoc and rb.resultIds are weird structures to work with...
+    for (ShardDoc eachDoc : docsOnThisPage) {
+      if (null == lastDoc || lastDoc.positionInResponse  < eachDoc.positionInResponse) {
+        lastDoc = eachDoc;
+      }
+    }
+    SortField[] sortFields = lastCursorMark.getSortSpec().getSort().getSort();
+    List<Object> nextCursorMarkValues = new ArrayList<>(sortFields.length);
+    for (SortField sf : sortFields) {
+      if (sf.getType().equals(SortField.Type.SCORE)) {
+        nextCursorMarkValues.add(lastDoc.score);
+      } else {
+        assert null != sf.getField() : "SortField has null field";
+        List<Object> fieldVals = (List<Object>) lastDoc.sortFieldValues.get(sf.getField());
+        nextCursorMarkValues.add(fieldVals.get(lastDoc.orderInShard));
+      }
+    }
+    CursorMark nextCursorMark = lastCursorMark.createNext(nextCursorMarkValues);
+    assert null != nextCursorMark : "null nextCursorMark";
+    rb.setNextCursorMark(nextCursorMark);
+  }
+
+  private NamedList unmarshalSortValues(SortSpec sortSpec, 
+                                        NamedList sortFieldValues, 
+                                        IndexSchema schema) {
+    NamedList unmarshalledSortValsPerField = new NamedList();
+
+    if (0 == sortFieldValues.size()) return unmarshalledSortValsPerField;
+    
+    List<SchemaField> schemaFields = sortSpec.getSchemaFields();
+    SortField[] sortFields = sortSpec.getSort().getSort();
+
+    int marshalledFieldNum = 0;
+    for (int sortFieldNum = 0; sortFieldNum < sortFields.length; sortFieldNum++) {
+      final SortField sortField = sortFields[sortFieldNum];
+      final SortField.Type type = sortField.getType();
+
+      // :TODO: would be simpler to always serialize every position of SortField[]
+      if (type==SortField.Type.SCORE || type==SortField.Type.DOC) continue;
+
+      final String sortFieldName = sortField.getField();
+      final String valueFieldName = sortFieldValues.getName(marshalledFieldNum);
+      assert sortFieldName.equals(valueFieldName)
+        : "sortFieldValues name key does not match expected SortField.getField";
+
+      List sortVals = (List)sortFieldValues.getVal(marshalledFieldNum);
+
+      final SchemaField schemaField = schemaFields.get(sortFieldNum);
+      if (null == schemaField) {
+        unmarshalledSortValsPerField.add(sortField.getField(), sortVals);
+      } else {
+        FieldType fieldType = schemaField.getType();
+        List unmarshalledSortVals = new ArrayList();
+        for (Object sortVal : sortVals) {
+          unmarshalledSortVals.add(fieldType.unmarshalSortValue(sortVal));
+        }
+        unmarshalledSortValsPerField.add(sortField.getField(), unmarshalledSortVals);
+      }
+      marshalledFieldNum++;
+    }
+    return unmarshalledSortValsPerField;
   }
 
   private void createRetrieveDocs(ResponseBuilder rb) {
@@ -936,11 +1215,11 @@ public class QueryComponent extends SearchComponent
     // unless those requests always go to the final destination shard
 
     // for each shard, collect the documents for that shard.
-    HashMap<String, Collection<ShardDoc>> shardMap = new HashMap<String,Collection<ShardDoc>>();
+    HashMap<String, Collection<ShardDoc>> shardMap = new HashMap<>();
     for (ShardDoc sdoc : rb.resultIds.values()) {
       Collection<ShardDoc> shardDocs = shardMap.get(sdoc.shard);
       if (shardDocs == null) {
-        shardDocs = new ArrayList<ShardDoc>();
+        shardDocs = new ArrayList<>();
         shardMap.put(sdoc.shard, shardDocs);
       }
       shardDocs.add(sdoc);
@@ -962,6 +1241,7 @@ public class QueryComponent extends SearchComponent
 
       // no need for a sort, we already have order
       sreq.params.remove(CommonParams.SORT);
+      sreq.params.remove(CursorMarkParams.CURSOR_MARK_PARAM);
 
       // we already have the field sort values
       sreq.params.remove(ResponseBuilder.FIELD_SORT_VALUES);
@@ -970,7 +1250,7 @@ public class QueryComponent extends SearchComponent
         sreq.params.add(CommonParams.FL, uniqueField.getName());
       }
     
-      ArrayList<String> ids = new ArrayList<String>(shardDocs.size());
+      ArrayList<String> ids = new ArrayList<>(shardDocs.size());
       for (ShardDoc shardDoc : shardDocs) {
         // TODO: depending on the type, we may need more tha a simple toString()?
         ids.add(shardDoc.id.toString());
@@ -992,24 +1272,50 @@ public class QueryComponent extends SearchComponent
     if ((sreq.purpose & ShardRequest.PURPOSE_GET_FIELDS) != 0) {
       boolean returnScores = (rb.getFieldFlags() & SolrIndexSearcher.GET_SCORES) != 0;
 
-      assert(sreq.responses.size() == 1);
-      ShardResponse srsp = sreq.responses.get(0);
-      SolrDocumentList docs = (SolrDocumentList)srsp.getSolrResponse().getResponse().get("response");
-
       String keyFieldName = rb.req.getSchema().getUniqueKeyField().getName();
       boolean removeKeyField = !rb.rsp.getReturnFields().wantsField(keyFieldName);
 
-      for (SolrDocument doc : docs) {
-        Object id = doc.getFieldValue(keyFieldName);
-        ShardDoc sdoc = rb.resultIds.get(id.toString());
-        if (sdoc != null) {
-          if (returnScores && sdoc.score != null) {
+      for (ShardResponse srsp : sreq.responses) {
+        if (srsp.getException() != null) {
+          // Don't try to get the documents if there was an exception in the shard
+          if(rb.req.getParams().getBool(ShardParams.SHARDS_INFO, false)) {
+            @SuppressWarnings("unchecked")
+            NamedList<Object> shardInfo = (NamedList<Object>) rb.rsp.getValues().get(ShardParams.SHARDS_INFO);
+            @SuppressWarnings("unchecked")
+            SimpleOrderedMap<Object> nl = (SimpleOrderedMap<Object>) shardInfo.get(srsp.getShard());
+            if (nl.get("error") == null) {
+              // Add the error to the shards info section if it wasn't added before
+              Throwable t = srsp.getException();
+              if(t instanceof SolrServerException) {
+                t = ((SolrServerException)t).getCause();
+              }
+              nl.add("error", t.toString() );
+              StringWriter trace = new StringWriter();
+              t.printStackTrace(new PrintWriter(trace));
+              nl.add("trace", trace.toString() );
+            }
+          }
+          
+          continue;
+        }
+        SolrDocumentList docs = (SolrDocumentList) srsp.getSolrResponse().getResponse().get("response");
+
+        for (SolrDocument doc : docs) {
+          Object id = doc.getFieldValue(keyFieldName);
+          ShardDoc sdoc = rb.resultIds.get(id.toString());
+          if (sdoc != null) {
+            if (returnScores) {
               doc.setField("score", sdoc.score);
+            } else {
+              // Score might have been added (in createMainQuery) to shard-requests (and therefore in shard-response-docs)
+              // Remove score if the outer request did not ask for it returned
+              doc.remove("score");
+            }
+            if (removeKeyField) {
+              doc.removeFields(keyFieldName);
+            }
+            rb._responseDocs.set(sdoc.positionInResponse, doc);
           }
-          if(removeKeyField) {
-            doc.removeFields(keyFieldName);
-          }
-          rb._responseDocs.set(sdoc.positionInResponse, doc);
         }
       }
     }
@@ -1025,12 +1331,63 @@ public class QueryComponent extends SearchComponent
   }
 
   @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/component/QueryComponent.java $";
-  }
-
-  @Override
   public URL[] getDocs() {
     return null;
+  }
+
+  /**
+   * Fake scorer for a single document
+   *
+   * TODO: when SOLR-5595 is fixed, this wont be needed, as we dont need to recompute sort values here from the comparator
+   */
+  private static class FakeScorer extends Scorer {
+    final int docid;
+    final float score;
+
+    FakeScorer(int docid, float score) {
+      super(null);
+      this.docid = docid;
+      this.score = score;
+    }
+
+    @Override
+    public int docID() {
+      return docid;
+    }
+
+    @Override
+    public float score() throws IOException {
+      return score;
+    }
+
+    @Override
+    public int freq() throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public int nextDoc() throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public int advance(int target) throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public long cost() {
+      return 1;
+    }
+
+    @Override
+    public Weight getWeight() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Collection<ChildScorer> getChildren() {
+      throw new UnsupportedOperationException();
+    }
   }
 }

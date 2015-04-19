@@ -16,6 +16,13 @@
  */
 package org.apache.solr.logging.jul;
 
+import com.google.common.base.Throwables;
+import org.apache.solr.common.SolrDocument;
+import org.apache.solr.logging.CircularList;
+import org.apache.solr.logging.ListenerConfig;
+import org.apache.solr.logging.LogWatcher;
+import org.apache.solr.logging.LoggerInfo;
+
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
@@ -27,15 +34,6 @@ import java.util.logging.Level;
 import java.util.logging.LogManager;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
-
-import org.apache.solr.common.SolrDocument;
-import org.apache.solr.core.CoreContainer;
-import org.apache.solr.logging.CircularList;
-import org.apache.solr.logging.ListenerConfig;
-import org.apache.solr.logging.LoggerInfo;
-import org.apache.solr.logging.LogWatcher;
-
-import com.google.common.base.Throwables;
 
 public class JulWatcher extends LogWatcher<LogRecord> {
 
@@ -90,7 +88,7 @@ public class JulWatcher extends LogWatcher<LogRecord> {
     LogManager manager = LogManager.getLogManager();
 
     Logger root = manager.getLogger("");
-    Map<String,LoggerInfo> map = new HashMap<String,LoggerInfo>();
+    Map<String,LoggerInfo> map = new HashMap<>();
     Enumeration<String> names = manager.getLoggerNames();
     while (names.hasMoreElements()) {
       String name = names.nextElement();
@@ -131,11 +129,11 @@ public class JulWatcher extends LogWatcher<LogRecord> {
   }
 
   @Override
-  public void registerListener(ListenerConfig cfg, CoreContainer container) {
+  public void registerListener(ListenerConfig cfg) {
     if(history!=null) {
       throw new IllegalStateException("History already registered");
     }
-    history = new CircularList<LogRecord>(cfg.size);
+    history = new CircularList<>(cfg.size);
     handler = new RecordHandler(this);
     if(cfg.threshold != null) {
       handler.setLevel(Level.parse(cfg.threshold));

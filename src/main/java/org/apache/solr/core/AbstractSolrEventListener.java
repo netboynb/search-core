@@ -24,15 +24,18 @@ import org.apache.solr.search.SolrIndexSearcher;
 /**
  */
 public class AbstractSolrEventListener implements SolrEventListener {
-  protected final SolrCore core;
+  private final SolrCore core;
+  public SolrCore getCore() { return core; }
+
   public AbstractSolrEventListener(SolrCore core) {
     this.core = core;
   }
-  protected NamedList args;
+  private NamedList args;
+  public NamedList getArgs() { return args; }
 
   @Override
   public void init(NamedList args) {
-    this.args = args;
+    this.args = args.clone();
   }
 
   @Override
@@ -58,7 +61,7 @@ public class AbstractSolrEventListener implements SolrEventListener {
   /**
    * Add the {@link org.apache.solr.common.params.EventParams#EVENT} with either the {@link org.apache.solr.common.params.EventParams#NEW_SEARCHER}
    * or {@link org.apache.solr.common.params.EventParams#FIRST_SEARCHER} values depending on the value of currentSearcher.
-   * <p/>
+   * <p>
    * Makes a copy of NamedList and then adds the parameters.
    *
    *

@@ -20,7 +20,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.lucene.index.AtomicReaderContext;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.queries.function.FunctionValues;
@@ -56,7 +56,7 @@ public class ValueSourceAugmenter extends DocTransformer
   @Override
   public String getName()
   {
-    return "function("+name+")";
+    return name;
   }
 
   @Override
@@ -77,7 +77,7 @@ public class ValueSourceAugmenter extends DocTransformer
 
   Map fcontext;
   SolrIndexSearcher searcher;
-  List<AtomicReaderContext> readerContexts;
+  List<LeafReaderContext> readerContexts;
   FunctionValues docValuesArr[];
 
 
@@ -89,19 +89,22 @@ public class ValueSourceAugmenter extends DocTransformer
 
       // TODO: calculate this stuff just once across diff functions
       int idx = ReaderUtil.subIndex(docid, readerContexts);
-      AtomicReaderContext rcontext = readerContexts.get(idx);
+      LeafReaderContext rcontext = readerContexts.get(idx);
       FunctionValues values = docValuesArr[idx];
       if (values == null) {
         docValuesArr[idx] = values = valueSource.getValues(fcontext, rcontext);
       }
 
       int localId = docid - rcontext.docBase;
-      Object val = values.objectVal(localId);
-      if (val != null) {
-        doc.setField( name, val );
-      }
+      setValue(doc,values.objectVal(localId));
     } catch (IOException e) {
       throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "exception at docid " + docid + " for valuesource " + valueSource, e);
+    }
+  }
+  
+  protected void setValue(SolrDocument doc, Object val) {
+    if(val!=null) {
+      doc.setField( name, val );
     }
   }
 }

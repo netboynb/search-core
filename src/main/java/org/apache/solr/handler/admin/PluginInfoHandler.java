@@ -29,6 +29,8 @@ import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
 
+import static org.apache.solr.common.params.CommonParams.NAME;
+
 /**
  * @since solr 1.2
  */
@@ -46,10 +48,10 @@ public class PluginInfoHandler extends RequestHandlerBase
   
   private static SimpleOrderedMap<Object> getSolrInfoBeans( SolrCore core, boolean stats )
   {
-    SimpleOrderedMap<Object> list = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> list = new SimpleOrderedMap<>();
     for (SolrInfoMBean.Category cat : SolrInfoMBean.Category.values()) 
     {
-      SimpleOrderedMap<Object> category = new SimpleOrderedMap<Object>();
+      SimpleOrderedMap<Object> category = new SimpleOrderedMap<>();
       list.add( cat.name(), category );
       Map<String, SolrInfoMBean> reg = core.getInfoRegistry();
       for (Map.Entry<String,SolrInfoMBean> entry : reg.entrySet()) {
@@ -57,17 +59,17 @@ public class PluginInfoHandler extends RequestHandlerBase
         if (m.getCategory() != cat) continue;
 
         String na = "Not Declared";
-        SimpleOrderedMap<Object> info = new SimpleOrderedMap<Object>();
+        SimpleOrderedMap<Object> info = new SimpleOrderedMap<>();
         category.add( entry.getKey(), info );
 
-        info.add( "name",        (m.getName()       !=null ? m.getName()        : na) );
+        info.add( NAME,          (m.getName()       !=null ? m.getName()        : na) );
         info.add( "version",     (m.getVersion()    !=null ? m.getVersion()     : na) );
         info.add( "description", (m.getDescription()!=null ? m.getDescription() : na) );
         info.add( "source",      (m.getSource()     !=null ? m.getSource()      : na) );
 
         URL[] urls = m.getDocs();
         if ((urls != null) && (urls.length > 0)) {
-          ArrayList<String> docs = new ArrayList<String>(urls.length);
+          ArrayList<String> docs = new ArrayList<>(urls.length);
           for( URL u : urls ) {
             docs.add( u.toExternalForm() );
           }
@@ -88,10 +90,5 @@ public class PluginInfoHandler extends RequestHandlerBase
   @Override
   public String getDescription() {
     return "Registry";
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/admin/PluginInfoHandler.java $";
   }
 }

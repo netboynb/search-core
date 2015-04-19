@@ -88,7 +88,7 @@ class CSVWriter extends TextResponseWriter {
 
   char[] sharedCSVBuf = new char[8192];
 
-  // prevent each instance from creating it's own buffer
+  // prevent each instance from creating its own buffer
   class CSVSharedBufPrinter extends CSVPrinter {
     public CSVSharedBufPrinter(Writer out, CSVStrategy strategy) {
       super(out, strategy);
@@ -146,12 +146,12 @@ class CSVWriter extends TextResponseWriter {
     CSVSharedBufPrinter mvPrinter;  // printer used to encode multiple values in a single CSV value
 
     // used to collect values
-    List<IndexableField> values = new ArrayList<IndexableField>(1);  // low starting amount in case there are many fields
+    List<IndexableField> values = new ArrayList<>(1);  // low starting amount in case there are many fields
     int tmp;
   }
 
   int pass;
-  Map<String,CSVField> csvFields = new LinkedHashMap<String,CSVField>();
+  Map<String,CSVField> csvFields = new LinkedHashMap<>();
 
   Calendar cal;  // for formatting date objects
 
@@ -235,19 +235,27 @@ class CSVWriter extends TextResponseWriter {
       // encapsulator will already be disabled if it wasn't specified
     }
 
-    Collection<String> fields = returnFields.getLuceneFieldNames();
+    Collection<String> fields = returnFields.getRequestedFieldNames();
     Object responseObj = rsp.getValues().get("response");
     boolean returnOnlyStored = false;
-    if (fields==null) {
+    if (fields==null||returnFields.hasPatternMatching()) {
       if (responseObj instanceof SolrDocumentList) {
         // get the list of fields from the SolrDocumentList
-        fields = new LinkedHashSet<String>();
+        if(fields==null) {
+          fields = new LinkedHashSet<>();
+        }
         for (SolrDocument sdoc: (SolrDocumentList)responseObj) {
           fields.addAll(sdoc.getFieldNames());
         }
       } else {
         // get the list of fields from the index
-        fields = req.getSearcher().getFieldNames();
+        Collection<String> all = req.getSearcher().getFieldNames();
+        if(fields==null) {
+          fields = all;
+        }
+        else {
+          fields.addAll(all);
+        }
       }
       if (returnFields.wantsScore()) {
         fields.add("score");

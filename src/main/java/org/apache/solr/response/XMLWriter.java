@@ -31,6 +31,9 @@ import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.XML;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.search.ReturnFields;
+import org.apache.solr.search.SolrReturnFields;
+
+import static org.apache.solr.common.params.CommonParams.NAME;
 
 
 /**
@@ -143,7 +146,7 @@ public class XMLWriter extends TextResponseWriter {
     writer.write('<');
     writer.write(tag);
     if (name!=null) {
-      writeAttr("name", name);
+      writeAttr(NAME, name);
       if (closeTag) {
         writer.write("/>");
       } else {
@@ -166,7 +169,7 @@ public class XMLWriter extends TextResponseWriter {
     if (doIndent) indent();
 
     writer.write("<result");
-    writeAttr("name",name);
+    writeAttr(NAME, name);
     writeAttr("numFound",Long.toString(numFound));
     writeAttr("start",Long.toString(start));
     if(maxScore!=null) {
@@ -197,6 +200,12 @@ public class XMLWriter extends TextResponseWriter {
         System.out.println( val );
       }
       writeVal(fname, val);
+    }
+
+    if(doc.hasChildDocuments()) {
+      for(SolrDocument childDoc : doc.getChildDocuments()) {
+        writeSolrDocument(null, childDoc, new SolrReturnFields(), idx);
+      }
     }
     
     decLevel();

@@ -17,19 +17,36 @@
 
 package org.apache.solr.search;
 
-import org.apache.lucene.index.AtomicReader;
-import org.apache.solr.common.SolrException;
-import org.apache.lucene.util.Bits;
-import org.apache.lucene.util.OpenBitSet;
-import org.apache.lucene.search.DocIdSet;
-import org.apache.lucene.search.Filter;
-import org.apache.lucene.search.DocIdSetIterator;
+import java.io.IOException;
+
+import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BitsFilteredDocIdSet;
-import org.apache.lucene.index.AtomicReaderContext;
+import org.apache.lucene.search.DocIdSet;
+import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.Filter;
+import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.BitDocIdSet;
+import org.apache.lucene.util.FixedBitSet;
+import org.apache.solr.common.SolrException;
 
 /** A base class that may be usefull for implementing DocSets */
 abstract class DocSetBase implements DocSet {
 
+  public static FixedBitSet toBitSet(DocSet set) {
+    if (set instanceof DocSetBase) {
+      return ((DocSetBase) set).getBits();
+    } else {
+      FixedBitSet bits = new FixedBitSet(64);
+      for (DocIterator iter = set.iterator(); iter.hasNext();) {
+        int nextDoc = iter.nextDoc();
+        bits = FixedBitSet.ensureCapacity(bits, nextDoc);
+        bits.set(nextDoc);
+      }
+      return bits;
+    }
+  }
+  
   // Not implemented efficiently... for testing purposes only
   @Override
   public boolean equals(Object obj) {
@@ -49,7 +66,7 @@ abstract class DocSetBase implements DocSet {
     }
 
     // if (this.size() != other.size()) return false;
-    return this.getBits().equals(other.getBits());
+    return this.getBits().equals(toBitSet(other));
   }
 
   /**
@@ -69,18 +86,20 @@ abstract class DocSetBase implements DocSet {
   }
 
   /**
-   * Inefficient base implementation.
-   *
-   * @see BitDocSet#getBits
+   * Return a {@link FixedBitSet} with a bit set for every document in this
+   * {@link DocSet}. The default implementation iterates on all docs and sets
+   * the relevant bits. You should override if you can provide a more efficient
+   * implementation.
    */
-  @Override
-  public OpenBitSet getBits() {
-    OpenBitSet bits = new OpenBitSet();
+  protected FixedBitSet getBits() {
+    FixedBitSet bits = new FixedBitSet(64);
     for (DocIterator iter = iterator(); iter.hasNext();) {
-      bits.set(iter.nextDoc());
+      int nextDoc = iter.nextDoc();
+      bits = FixedBitSet.ensureCapacity(bits, nextDoc);
+      bits.set(nextDoc);
     }
     return bits;
-  };
+  }
 
   @Override
   public DocSet intersection(DocSet other) {
@@ -91,8 +110,8 @@ abstract class DocSetBase implements DocSet {
     }
 
     // Default... handle with bitsets.
-    OpenBitSet newbits = (OpenBitSet)(this.getBits().clone());
-    newbits.and(other.getBits());
+    FixedBitSet newbits = getBits().clone();
+    newbits.and(toBitSet(other));
     return new BitDocSet(newbits);
   }
 
@@ -107,11 +126,11 @@ abstract class DocSetBase implements DocSet {
     return intersectionSize(other) > 0;
   }
 
-
   @Override
   public DocSet union(DocSet other) {
-    OpenBitSet newbits = (OpenBitSet)(this.getBits().clone());
-    newbits.or(other.getBits());
+    FixedBitSet otherBits = toBitSet(other);
+    FixedBitSet newbits = FixedBitSet.ensureCapacity(getBits().clone(), otherBits.length());
+    newbits.or(otherBits);
     return new BitDocSet(newbits);
   }
 
@@ -122,7 +141,7 @@ abstract class DocSetBase implements DocSet {
     if (!(other instanceof BitDocSet)) {
       return other.intersectionSize(this);
     }
-    // less efficient way: do the intersection then get it's size
+    // less efficient way: do the intersection then get its size
     return intersection(other).size();
   }
 
@@ -133,8 +152,8 @@ abstract class DocSetBase implements DocSet {
 
   @Override
   public DocSet andNot(DocSet other) {
-    OpenBitSet newbits = (OpenBitSet)(this.getBits().clone());
-    newbits.andNot(other.getBits());
+    FixedBitSet newbits = getBits().clone();
+    newbits.andNot(toBitSet(other));
     return new BitDocSet(newbits);
   }
 
@@ -145,17 +164,17 @@ abstract class DocSetBase implements DocSet {
 
   @Override
   public Filter getTopFilter() {
-    final OpenBitSet bs = getBits();
+    final FixedBitSet bs = getBits();
 
     return new Filter() {
       @Override
-      public DocIdSet getDocIdSet(final AtomicReaderContext context, Bits acceptDocs) {
-        AtomicReader reader = context.reader();
+      public DocIdSet getDocIdSet(final LeafReaderContext context, Bits acceptDocs) {
+        LeafReader reader = context.reader();
         // all Solr DocSets that are used as filters only include live docs
         final Bits acceptDocs2 = acceptDocs == null ? null : (reader.getLiveDocs() == acceptDocs ? null : acceptDocs);
 
         if (context.isTopLevel) {
-          return BitsFilteredDocIdSet.wrap(bs, acceptDocs);
+          return BitsFilteredDocIdSet.wrap(new BitDocIdSet(bs), acceptDocs);
         }
 
         final int base = context.docBase;
@@ -177,14 +196,19 @@ abstract class DocSetBase implements DocSet {
               @Override
               public int nextDoc() {
                 pos = bs.nextSetBit(pos+1);
-                return adjustedDoc = (pos>=0 && pos<max) ? pos-base : NO_MORE_DOCS;
+                return adjustedDoc = pos<max ? pos-base : NO_MORE_DOCS;
               }
 
               @Override
               public int advance(int target) {
                 if (target==NO_MORE_DOCS) return adjustedDoc=NO_MORE_DOCS;
                 pos = bs.nextSetBit(target+base);
-                return adjustedDoc = (pos>=0 && pos<max) ? pos-base : NO_MORE_DOCS;
+                return adjustedDoc = pos<max ? pos-base : NO_MORE_DOCS;
+              }
+
+              @Override
+              public long cost() {
+                return bs.length();
               }
             };
           }
@@ -195,6 +219,11 @@ abstract class DocSetBase implements DocSet {
           }
 
           @Override
+          public long ramBytesUsed() {
+            return bs.ramBytesUsed();
+          }
+
+          @Override
           public Bits bits() {
             // sparse filters should not use random access
             return null;
@@ -202,15 +231,24 @@ abstract class DocSetBase implements DocSet {
 
         }, acceptDocs2);
       }
+      @Override
+      public String toString(String field) {
+        return "DocSetTopFilter";
+      }
     };
   }
 
   @Override
-  public void setBitsOn(OpenBitSet target) {
+  public void addAllTo(DocSet target) {
     DocIterator iter = iterator();
     while (iter.hasNext()) {
-      target.fastSet(iter.nextDoc());
+      target.add(iter.nextDoc());
     }
   }
 
+
+  /** FUTURE: for off-heap */
+  @Override
+  public void close() throws IOException {
+  }
 }

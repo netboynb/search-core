@@ -1,15 +1,24 @@
 package org.apache.solr.search;
 
-import org.apache.lucene.queries.function.ValueSource;
-import org.apache.lucene.search.*;
-import org.apache.lucene.util.Bits;
-import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.index.AtomicReaderContext;
-import org.apache.solr.common.SolrException;
-
 import java.io.IOException;
-import java.util.Set;
 import java.util.Map;
+import java.util.Set;
+
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.queries.function.ValueSource;
+import org.apache.lucene.search.ComplexExplanation;
+import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.DocIdSet;
+import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.Explanation;
+import org.apache.lucene.search.Filter;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.Scorer;
+import org.apache.lucene.search.Weight;
+import org.apache.lucene.util.Bits;
+import org.apache.solr.common.SolrException;
 
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
@@ -36,15 +45,16 @@ import java.util.Map;
  * Experimental and subject to change.
  */
 public class SolrConstantScoreQuery extends ConstantScoreQuery implements ExtendedQuery {
+  private final Filter filter;
   boolean cache = true;  // cache by default
   int cost;
 
   public SolrConstantScoreQuery(Filter filter) {
     super(filter);
+    this.filter = filter;
   }
 
   /** Returns the encapsulated filter */
-  @Override
   public Filter getFilter() {
     return filter;
   }
@@ -84,26 +94,22 @@ public class SolrConstantScoreQuery extends ConstantScoreQuery implements Extend
     return this;
   }
 
-  @Override
-  public void extractTerms(Set terms) {
-    // OK to not add any terms when used for MultiSearcher,
-    // but may not be OK for highlighting
-  }
-
   protected class ConstantWeight extends Weight {
     private float queryNorm;
     private float queryWeight;
     private Map context;
 
     public ConstantWeight(IndexSearcher searcher) throws IOException {
+      super(SolrConstantScoreQuery.this);
       this.context = ValueSource.newContext(searcher);
       if (filter instanceof SolrFilter)
         ((SolrFilter)filter).createWeight(context, searcher);
     }
 
     @Override
-    public Query getQuery() {
-      return SolrConstantScoreQuery.this;
+    public void extractTerms(Set<org.apache.lucene.index.Term> terms) {
+      // OK to not add any terms when used for MultiSearcher,
+      // but may not be OK for highlighting
     }
 
     @Override
@@ -119,13 +125,12 @@ public class SolrConstantScoreQuery extends ConstantScoreQuery implements Extend
     }
 
     @Override
-    public Scorer scorer(AtomicReaderContext context, boolean scoreDocsInOrder,
-        boolean topScorer, Bits acceptDocs) throws IOException {
+    public Scorer scorer(LeafReaderContext context, Bits acceptDocs) throws IOException {
       return new ConstantScorer(context, this, queryWeight, acceptDocs);
     }
 
     @Override
-    public Explanation explain(AtomicReaderContext context, int doc) throws IOException {
+    public Explanation explain(LeafReaderContext context, int doc) throws IOException {
 
       ConstantScorer cs = new ConstantScorer(context, this, queryWeight, context.reader().getLiveDocs());
       boolean exists = cs.docIdSetIterator.advance(doc) == doc;
@@ -155,17 +160,17 @@ public class SolrConstantScoreQuery extends ConstantScoreQuery implements Extend
     final Bits acceptDocs;
     int doc = -1;
 
-    public ConstantScorer(AtomicReaderContext context, ConstantWeight w, float theScore, Bits acceptDocs) throws IOException {
+    public ConstantScorer(LeafReaderContext context, ConstantWeight w, float theScore, Bits acceptDocs) throws IOException {
       super(w);
       this.theScore = theScore;
       this.acceptDocs = acceptDocs;
       DocIdSet docIdSet = filter instanceof SolrFilter ? ((SolrFilter)filter).getDocIdSet(w.context, context, acceptDocs) : filter.getDocIdSet(context, acceptDocs);
       if (docIdSet == null) {
-        docIdSetIterator = DocIdSet.EMPTY_DOCIDSET.iterator();
+        docIdSetIterator = DocIdSetIterator.empty();
       } else {
         DocIdSetIterator iter = docIdSet.iterator();
         if (iter == null) {
-          docIdSetIterator = DocIdSet.EMPTY_DOCIDSET.iterator();
+          docIdSetIterator = DocIdSetIterator.empty();
         } else {
           docIdSetIterator = iter;
         }
@@ -196,10 +201,15 @@ public class SolrConstantScoreQuery extends ConstantScoreQuery implements Extend
     public int advance(int target) throws IOException {
       return docIdSetIterator.advance(target);
     }
+
+    @Override
+    public long cost() {
+      return docIdSetIterator.cost();
+    }
   }
 
   @Override
-  public Weight createWeight(IndexSearcher searcher) {
+  public Weight createWeight(IndexSearcher searcher, boolean needsScores) {
     try {
       return new SolrConstantScoreQuery.ConstantWeight(searcher);
     } catch (IOException e) {

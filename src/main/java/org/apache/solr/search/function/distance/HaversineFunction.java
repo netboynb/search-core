@@ -16,7 +16,7 @@ package org.apache.solr.search.function.distance;
  * limitations under the License.
  */
 
-import org.apache.lucene.index.AtomicReaderContext;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.docvalues.DoubleDocValues;
@@ -32,9 +32,9 @@ import java.util.Map;
 /**
  * Calculate the Haversine formula (distance) between any two points on a sphere
  * Takes in four value sources: (latA, lonA); (latB, lonB).
- * <p/>
+ * <p>
  * Assumes the value sources are in radians unless
- * <p/>
+ * <p>
  * See http://en.wikipedia.org/wiki/Great-circle_distance and
  * http://en.wikipedia.org/wiki/Haversine_formula for the actual formula and
  * also http://www.movable-type.co.uk/scripts/latlong.html
@@ -94,7 +94,7 @@ public class HaversineFunction extends ValueSource {
 
 
   @Override
-  public FunctionValues getValues(Map context, AtomicReaderContext readerContext) throws IOException {
+  public FunctionValues getValues(Map context, LeafReaderContext readerContext) throws IOException {
     final FunctionValues vals1 = p1.getValues(context, readerContext);
 
     final FunctionValues vals2 = p2.getValues(context, readerContext);

@@ -28,14 +28,23 @@ import java.util.Map;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.queries.function.ValueSource;
+import org.apache.lucene.queries.function.valuesource.SortedSetFieldSource;
 import org.apache.lucene.search.SortField;
+import org.apache.lucene.uninverting.UninvertingReader.Type;
+import org.apache.lucene.util.AttributeFactory;
 import org.apache.lucene.util.AttributeSource;
 import org.apache.lucene.util.AttributeSource.State;
 import org.apache.solr.analysis.SolrAnalyzer;
 import org.apache.solr.response.TextResponseWriter;
+import org.apache.solr.search.QParser;
+import org.apache.solr.search.Sorting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.solr.common.params.CommonParams.JSON;
 
 /**
  * Pre-analyzed field type provides a way to index a serialized token stream,
@@ -53,44 +62,50 @@ public class PreAnalyzedField extends FieldType {
 
   
   private PreAnalyzedParser parser;
+  private Analyzer analyzer;
   
   @Override
-  protected void init(IndexSchema schema, Map<String, String> args) {
+  public void init(IndexSchema schema, Map<String, String> args) {
     super.init(schema, args);
     String implName = args.get(PARSER_IMPL);
     if (implName == null) {
       parser = new JsonPreAnalyzedParser();
     } else {
-      try {
-        Class<?> implClazz = Class.forName(implName);
-        if (!PreAnalyzedParser.class.isAssignableFrom(implClazz)) {
-          throw new Exception("must implement " + PreAnalyzedParser.class.getName());
-        }
-        Constructor<?> c = implClazz.getConstructor(new Class<?>[0]);
-        parser = (PreAnalyzedParser) c.newInstance(new Object[0]);
-      } catch (Exception e) {
-        LOG.warn("Can't use the configured PreAnalyzedParser class '" + implName + "' (" +
-            e.getMessage() + "), using default " + DEFAULT_IMPL);
+      // short name
+      if (JSON.equalsIgnoreCase(implName)) {
         parser = new JsonPreAnalyzedParser();
+      } else if ("simple".equalsIgnoreCase(implName)) {
+        parser = new SimplePreAnalyzedParser();
+      } else {
+        try {
+          Class<? extends PreAnalyzedParser> implClazz = schema.getResourceLoader().findClass(implName, PreAnalyzedParser.class);
+          Constructor<?> c = implClazz.getConstructor(new Class<?>[0]);
+          parser = (PreAnalyzedParser) c.newInstance(new Object[0]);
+        } catch (Exception e) {
+          LOG.warn("Can't use the configured PreAnalyzedParser class '" + implName +
+              "', using default " + DEFAULT_IMPL, e);
+          parser = new JsonPreAnalyzedParser();
+        }
       }
+      args.remove(PARSER_IMPL);
     }
+    // create Analyzer instance for reuse:
+    analyzer = new SolrAnalyzer() {
+      @Override
+      protected TokenStreamComponents createComponents(String fieldName) {
+        return new TokenStreamComponents(new PreAnalyzedTokenizer(parser));
+      }
+    };
   }
 
   @Override
-  public Analyzer getAnalyzer() {
-    return new SolrAnalyzer() {
-      
-      @Override
-      protected TokenStreamComponents createComponents(String fieldName, Reader reader) {
-        return new TokenStreamComponents(new PreAnalyzedTokenizer(reader, parser));
-      }
-      
-    };
+  public Analyzer getIndexAnalyzer() {
+    return analyzer;
   }
   
   @Override
   public Analyzer getQueryAnalyzer() {
-    return getAnalyzer();
+    return getIndexAnalyzer();
   }
 
   @Override
@@ -100,15 +115,26 @@ public class PreAnalyzedField extends FieldType {
     try {
       f = fromString(field, String.valueOf(value), boost);
     } catch (Exception e) {
-      e.printStackTrace();
+      LOG.warn("Error parsing pre-analyzed field '" + field.getName() + "'", e);
       return null;
     }
     return f;
   }
-
+  
   @Override
   public SortField getSortField(SchemaField field, boolean top) {
-    return getStringSort(field, top);
+    field.checkSortability();
+    return Sorting.getTextSortField(field.getName(), top, field.sortMissingLast(), field.sortMissingFirst());
+  }
+  
+  @Override
+  public ValueSource getValueSource(SchemaField field, QParser parser) {
+    return new SortedSetFieldSource(field.getName());
+  }
+
+  @Override
+  public Type getUninversionType(SchemaField sf) {
+    return Type.SORTED_SET_BINARY;
   }
 
   @Override
@@ -128,12 +154,42 @@ public class PreAnalyzedField extends FieldType {
   }
   
   /**
+   * Utility method to create a {@link org.apache.lucene.document.FieldType}
+   * based on the {@link SchemaField}
+   */
+  public static org.apache.lucene.document.FieldType createFieldType(SchemaField field) {
+    if (!field.indexed() && !field.stored()) {
+      if (log.isTraceEnabled())
+        log.trace("Ignoring unindexed/unstored field: " + field);
+      return null;
+    }
+    org.apache.lucene.document.FieldType newType = new org.apache.lucene.document.FieldType();
+    newType.setTokenized(field.isTokenized());
+    newType.setStored(field.stored());
+    newType.setOmitNorms(field.omitNorms());
+    IndexOptions options = IndexOptions.DOCS_AND_FREQS_AND_POSITIONS;
+    if (field.omitTermFreqAndPositions()) {
+      options = IndexOptions.DOCS;
+    } else if (field.omitPositions()) {
+      options = IndexOptions.DOCS_AND_FREQS;
+    } else if (field.storeOffsetsWithPositions()) {
+      options = IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS;
+    }
+    newType.setIndexOptions(options);
+    newType.setStoreTermVectors(field.storeTermVector());
+    newType.setStoreTermVectorOffsets(field.storeTermOffsets());
+    newType.setStoreTermVectorPositions(field.storeTermPositions());
+    newType.setStoreTermVectorPayloads(field.storeTermPayloads());
+    return newType;
+  }
+  
+  /**
    * This is a simple holder of a stored part and the collected states (tokens with attributes).
    */
   public static class ParseResult {
     public String str;
     public byte[] bin;
-    public List<State> states = new LinkedList<State>();
+    public List<State> states = new LinkedList<>();
   }
   
   /**
@@ -163,21 +219,46 @@ public class PreAnalyzedField extends FieldType {
     if (val == null || val.trim().length() == 0) {
       return null;
     }
-    PreAnalyzedTokenizer parse = new PreAnalyzedTokenizer(new StringReader(val), parser);
+    PreAnalyzedTokenizer parse = new PreAnalyzedTokenizer(parser);
+    parse.setReader(new StringReader(val));
     parse.reset(); // consume
-    Field f = (Field)super.createField(field, val, boost);
+    org.apache.lucene.document.FieldType type = createFieldType(field);
+    if (type == null) {
+      parse.close();
+      return null;
+    }
+    Field f = null;
     if (parse.getStringValue() != null) {
-      f.setStringValue(parse.getStringValue());
+      if (field.stored()) {
+        f = new Field(field.getName(), parse.getStringValue(), type);
+      } else {
+        type.setStored(false);
+      }
     } else if (parse.getBinaryValue() != null) {
-      f.setBytesValue(parse.getBinaryValue());
+      if (field.isBinary()) {
+        f = new Field(field.getName(), parse.getBinaryValue(), type);
+      }
     } else {
-      f.fieldType().setStored(false);
+      type.setStored(false);
     }
     
     if (parse.hasTokenStream()) {
-      f.fieldType().setIndexed(true);
-      f.fieldType().setTokenized(true);
-      f.setTokenStream(parse);
+      if (field.indexed()) {
+        type.setTokenized(true);
+        if (f != null) {
+          f.setTokenStream(parse);
+        } else {
+          f = new Field(field.getName(), parse, type);
+        }
+      } else {
+        if (f != null) {
+          f.fieldType().setIndexOptions(IndexOptions.NONE);
+          f.fieldType().setTokenized(false);
+        }
+      }
+    }
+    if (f != null) {
+      f.setBoost(boost);
     }
     return f;
   }
@@ -186,15 +267,15 @@ public class PreAnalyzedField extends FieldType {
    * Token stream that works from a list of saved states.
    */
   private static class PreAnalyzedTokenizer extends Tokenizer {
-    private final List<AttributeSource.State> cachedStates = new LinkedList<AttributeSource.State>();
+    private final List<AttributeSource.State> cachedStates = new LinkedList<>();
     private Iterator<AttributeSource.State> it = null;
     private String stringValue = null;
     private byte[] binaryValue = null;
     private PreAnalyzedParser parser;
-    private Reader lastReader;
     
-    public PreAnalyzedTokenizer(Reader reader, PreAnalyzedParser parser) {
-      super(reader);
+    public PreAnalyzedTokenizer(PreAnalyzedParser parser) {
+      // we don't pack attributes: since we are used for (de)serialization and dont want bloat.
+      super(AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY);
       this.parser = parser;
     }
     
@@ -209,7 +290,7 @@ public class PreAnalyzedField extends FieldType {
     public byte[] getBinaryValue() {
       return binaryValue;
     }
-    
+
     @Override
     public final boolean incrementToken() {
       // lazy init the iterator
@@ -229,8 +310,8 @@ public class PreAnalyzedField extends FieldType {
     @Override
     public final void reset() throws IOException {
       // NOTE: this acts like rewind if you call it again
-      if (input != lastReader) {
-        lastReader = input;
+      if (it == null) {
+        super.reset();
         cachedStates.clear();
         stringValue = null;
         binaryValue = null;
@@ -244,12 +325,6 @@ public class PreAnalyzedField extends FieldType {
         }
       }
       it = cachedStates.iterator();
-    }
-
-    @Override
-    public void close() throws IOException {
-      super.close();
-      lastReader = null; // just a ref, null for gc
     }
   }
   

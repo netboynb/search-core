@@ -23,18 +23,23 @@ import java.util.Map;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.core.SolrCore;
+import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestHandler;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.util.plugin.SolrCoreAware;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A special Handler that registers all standard admin handlers
  * 
  * @since solr 1.3
  */
-public class AdminHandlers implements SolrCoreAware, SolrRequestHandler
+@Deprecated
+public class AdminHandlers extends RequestHandlerBase implements SolrCoreAware
 {
+  public static Logger log = LoggerFactory.getLogger(AdminHandlers.class);
   NamedList initArgs = null;
   
   private static class StandardHandler {
@@ -55,17 +60,12 @@ public class AdminHandlers implements SolrCoreAware, SolrRequestHandler
   public void init(NamedList args) {
     this.initArgs = args;
   }
-  
+
   @Override
   public void inform(SolrCore core) 
   {
     String path = null;
-    for( Map.Entry<String, SolrRequestHandler> entry : core.getRequestHandlers().entrySet() ) {
-      if( entry.getValue() == this ) {
-        path = entry.getKey();
-        break;
-      }
-    }
+    path = getPluginInfo().name;
     if( path == null ) {
       throw new SolrException( SolrException.ErrorCode.SERVER_ERROR, 
           "The AdminHandler is not registered with the current core." );
@@ -100,11 +100,12 @@ public class AdminHandlers implements SolrCoreAware, SolrRequestHandler
         }
       }
     }
+    log.warn("<requestHandler name=\"/admin/\" \n class=\"solr.admin.AdminHandlers\" /> is deprecated . It is not required anymore");
   }
 
-  
+
   @Override
-  public void handleRequest(SolrQueryRequest req, SolrQueryResponse rsp) {
+  public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) {
     throw new SolrException( SolrException.ErrorCode.SERVER_ERROR, 
         "The AdminHandler should never be called directly" );
   }
@@ -123,7 +124,7 @@ public class AdminHandlers implements SolrCoreAware, SolrRequestHandler
 
   @Override
   public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/admin/AdminHandlers.java $";
+    return null;
   }
 
   @Override

@@ -41,11 +41,14 @@ public abstract class TransformerFactory implements NamedListInitializedPlugin
 
   public abstract DocTransformer create(String field, SolrParams params, SolrQueryRequest req);
 
-  public static final Map<String,TransformerFactory> defaultFactories = new HashMap<String,TransformerFactory>();
+  public static final Map<String,TransformerFactory> defaultFactories = new HashMap<>();
   static {
     defaultFactories.put( "explain", new ExplainAugmenterFactory() );
     defaultFactories.put( "value", new ValueAugmenterFactory() );
     defaultFactories.put( "docid", new DocIdAugmenterFactory() );
     defaultFactories.put( "shard", new ShardAugmenterFactory() );
+    defaultFactories.put( "child", new ChildDocTransformerFactory() );
+    defaultFactories.put( "json", new RawValueTransformerFactory("json") );
+    defaultFactories.put( "xml", new RawValueTransformerFactory("xml") );
   }
 }

@@ -29,6 +29,7 @@ import org.apache.solr.common.util.NamedList;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.handler.component.SpellCheckMergeData;
 import org.apache.solr.schema.FieldType;
+import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.search.SolrIndexSearcher;
 
 import java.io.IOException;
@@ -63,16 +64,17 @@ public abstract class SolrSpellChecker {
       name = DEFAULT_DICTIONARY_NAME;
     }
     field = (String)config.get(FIELD);
-    if (field != null && core.getSchema().getFieldTypeNoEx(field) != null)  {
-      analyzer = core.getSchema().getFieldType(field).getQueryAnalyzer();
+    IndexSchema schema = core.getLatestSchema();
+    if (field != null && schema.getFieldTypeNoEx(field) != null)  {
+      analyzer = schema.getFieldType(field).getQueryAnalyzer();
     }
     fieldTypeName = (String) config.get(FIELD_TYPE);
-    if (core.getSchema().getFieldTypes().containsKey(fieldTypeName))  {
-      FieldType fieldType = core.getSchema().getFieldTypes().get(fieldTypeName);
+    if (schema.getFieldTypes().containsKey(fieldTypeName))  {
+      FieldType fieldType = schema.getFieldTypes().get(fieldTypeName);
       analyzer = fieldType.getQueryAnalyzer();
     }
     if (analyzer == null)   {
-      analyzer = new WhitespaceAnalyzer(core.getSolrConfig().luceneMatchVersion);
+      analyzer = new WhitespaceAnalyzer();
     }
     return name;
   }
@@ -98,9 +100,11 @@ public abstract class SolrSpellChecker {
     for (Map.Entry<String, HashSet<String>> entry : mergeData.origVsSuggested.entrySet()) {
       String original = entry.getKey();
       
-      //Only use this suggestion if all shards reported it as misspelled.
+      //Only use this suggestion if all shards reported it as misspelled, 
+      //unless it was not a term original to the user's query
+      //(WordBreakSolrSpellChecker can add new terms to the response, and we want to keep these)
       Integer numShards = mergeData.origVsShards.get(original);
-      if(numShards<mergeData.totalNumberShardResponses) {
+      if(numShards<mergeData.totalNumberShardResponses && mergeData.isOriginalToQuery(original)) {
         continue;
       }
       
@@ -136,7 +140,7 @@ public abstract class SolrSpellChecker {
         for (SuggestWord word : suggestions)
           result.add(token, word.string, word.freq);
       } else {
-        List<String> words = new ArrayList<String>(sugQueue.size());
+        List<String> words = new ArrayList<>(sugQueue.size());
         for (SuggestWord word : suggestions) words.add(word.string);
         result.add(token, words);
       }
@@ -183,7 +187,6 @@ public abstract class SolrSpellChecker {
   /**
    * Get suggestions for the given query.  Tokenizes the query using a field appropriate Analyzer.
    * The {@link SpellingResult#getSuggestions()} suggestions must be ordered by best suggestion first.
-   * <p/>
    *
    * @param options The {@link SpellingOptions} to use
    * @return The {@link SpellingResult} suggestions

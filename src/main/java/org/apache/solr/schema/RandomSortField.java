@@ -22,12 +22,13 @@ import java.util.Map;
 
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.AtomicReaderContext;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.docvalues.IntDocValues;
 import org.apache.lucene.search.*;
+import org.apache.lucene.uninverting.UninvertingReader.Type;
 import org.apache.solr.response.TextResponseWriter;
 import org.apache.solr.search.QParser;
 
@@ -52,10 +53,10 @@ import org.apache.solr.search.QParser;
  * 
  * Examples of queries:
  * <ul>
- * <li>http://localhost:8983/solr/select/?q=*:*&fl=name&sort=rand_1234%20desc</li>
- * <li>http://localhost:8983/solr/select/?q=*:*&fl=name&sort=rand_2345%20desc</li>
- * <li>http://localhost:8983/solr/select/?q=*:*&fl=name&sort=rand_ABDC%20desc</li>
- * <li>http://localhost:8983/solr/select/?q=*:*&fl=name&sort=rand_21%20desc</li>
+ * <li>http://localhost:8983/solr/select/?q=*:*&amp;fl=name&amp;sort=random_1234%20desc</li>
+ * <li>http://localhost:8983/solr/select/?q=*:*&amp;fl=name&amp;sort=random_2345%20desc</li>
+ * <li>http://localhost:8983/solr/select/?q=*:*&amp;fl=name&amp;sort=random_ABDC%20desc</li>
+ * <li>http://localhost:8983/solr/select/?q=*:*&amp;fl=name&amp;sort=random_21%20desc</li>
  * </ul>
  * Note that multiple calls to the same URL will return the same sorting order.
  * 
@@ -79,7 +80,7 @@ public class RandomSortField extends FieldType {
    * Given a field name and an IndexReader, get a random hash seed.
    * Using dynamic fields, you can force the random order to change 
    */
-  private static int getSeed(String fieldName, AtomicReaderContext context) {
+  private static int getSeed(String fieldName, LeafReaderContext context) {
     final DirectoryReader top = (DirectoryReader) ReaderUtil.getTopLevelContext(context).reader();
     // calling getVersion() on a segment will currently give you a null pointer exception, so
     // we use the top-level reader.
@@ -89,6 +90,11 @@ public class RandomSortField extends FieldType {
   @Override
   public SortField getSortField(SchemaField field, boolean reverse) {
     return new SortField(field.getName(), randomComparatorSource, reverse);
+  }
+  
+  @Override
+  public Type getUninversionType(SchemaField sf) {
+    return null;
   }
 
   @Override
@@ -103,10 +109,11 @@ public class RandomSortField extends FieldType {
   private static FieldComparatorSource randomComparatorSource = new FieldComparatorSource() {
     @Override
     public FieldComparator<Integer> newComparator(final String fieldname, final int numHits, int sortPos, boolean reversed) {
-      return new FieldComparator<Integer>() {
+      return new SimpleFieldComparator<Integer>() {
         int seed;
         private final int[] values = new int[numHits];
         int bottomVal;
+        int topVal;
 
         @Override
         public int compare(int slot1, int slot2) {
@@ -116,6 +123,11 @@ public class RandomSortField extends FieldType {
         @Override
         public void setBottom(int slot) {
           bottomVal = values[slot];
+        }
+
+        @Override
+        public void setTopValue(Integer value) {
+          topVal = value.intValue();
         }
 
         @Override
@@ -129,9 +141,8 @@ public class RandomSortField extends FieldType {
         }
 
         @Override
-        public FieldComparator setNextReader(AtomicReaderContext context) {
+        protected void doSetNextReader(LeafReaderContext context) {
           seed = getSeed(fieldname, context);
-          return this;
         }
 
         @Override
@@ -140,9 +151,9 @@ public class RandomSortField extends FieldType {
         }
 
         @Override
-        public int compareDocToValue(int doc, Integer valueObj) {
+        public int compareTop(int doc) {
           // values will be positive... no overflow possible.
-          return hash(doc+seed) - valueObj.intValue();
+          return topVal - hash(doc+seed);
         }
       };
     }
@@ -163,7 +174,7 @@ public class RandomSortField extends FieldType {
     }
 
     @Override
-    public FunctionValues getValues(Map context, final AtomicReaderContext readerContext) throws IOException {
+    public FunctionValues getValues(Map context, final LeafReaderContext readerContext) throws IOException {
       return new IntDocValues(this) {
           private final int seed = getSeed(field, readerContext);
           @Override

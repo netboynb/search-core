@@ -16,33 +16,49 @@ package org.apache.solr.handler.component;
  * limitations under the License.
  */
 
-import java.net.MalformedURLException;
-import java.util.Random;
-import java.util.concurrent.*;
-
+import org.apache.commons.lang.StringUtils;
 import org.apache.http.client.HttpClient;
+import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.impl.client.DefaultHttpRequestRetryHandler;
+import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.HttpClientUtil;
-import org.apache.solr.client.solrj.impl.LBHttpSolrServer;
-import org.apache.solr.common.SolrException;
+import org.apache.solr.client.solrj.impl.LBHttpSolrClient;
+import org.apache.solr.client.solrj.request.QueryRequest;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.util.ExecutorUtil;
 import org.apache.solr.common.util.NamedList;
+import org.apache.solr.common.util.StrUtils;
+import org.apache.solr.common.util.URLUtil;
 import org.apache.solr.core.PluginInfo;
+import org.apache.solr.update.UpdateShardHandlerConfig;
 import org.apache.solr.util.DefaultSolrThreadFactory;
-import org.apache.solr.util.plugin.PluginInfoInitialized;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class HttpShardHandlerFactory extends ShardHandlerFactory implements PluginInfoInitialized {
-  protected static Logger log = LoggerFactory.getLogger(HttpShardHandlerFactory.class);
+import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
+
+public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.apache.solr.util.plugin.PluginInfoInitialized {
+  protected static Logger log = LoggerFactory.getLogger(HttpShardHandlerFactory.class);
+  private static final String DEFAULT_SCHEME = "http";
+  
   // We want an executor that doesn't take up any resources if
   // it's not used, so it could be created statically for
   // the distributed search component if desired.
   //
   // Consider CallerRuns policy and a lower max threads to throttle
   // requests at some point (or should we simply return failure?)
-  ThreadPoolExecutor commExecutor = new ThreadPoolExecutor(
+  private ThreadPoolExecutor commExecutor = new ExecutorUtil.MDCAwareThreadPoolExecutor(
       0,
       Integer.MAX_VALUE,
       5, TimeUnit.SECONDS, // terminate idle threads after 5 sec
@@ -50,21 +66,23 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements Plug
       new DefaultSolrThreadFactory("httpShardExecutor")
   );
 
-  private HttpClient defaultClient;
-  LBHttpSolrServer loadbalancer;
+  protected HttpClient defaultClient;
+  private LBHttpSolrClient loadbalancer;
   //default values:
-  int soTimeout = 0; 
-  int connectionTimeout = 0; 
+  int soTimeout = UpdateShardHandlerConfig.DEFAULT_DISTRIBUPDATESOTIMEOUT;
+  int connectionTimeout = UpdateShardHandlerConfig.DEFAULT_DISTRIBUPDATECONNTIMEOUT;
   int maxConnectionsPerHost = 20;
+  int maxConnections = 10000;
   int corePoolSize = 0;
   int maximumPoolSize = Integer.MAX_VALUE;
   int keepAliveTime = 5;
   int queueSize = -1;
   boolean accessPolicy = false;
+  boolean useRetries = false;
 
-  public String scheme = "http://"; //current default values
+  private String scheme = null;
 
-  final Random r = new Random();
+  private final Random r = new Random();
 
   // URL scheme to be used in distributed search.
   static final String INIT_URL_SCHEME = "urlScheme";
@@ -83,6 +101,10 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements Plug
 
   // Configure if the threadpool favours fairness over throughput
   static final String INIT_FAIRNESS_POLICY = "fairnessPolicy";
+  
+  // Turn on retries for certain IOExceptions, many of which can happen
+  // due to connection pooling limitations / races
+  static final String USE_RETRIES = "useRetries";
 
   /**
    * Get {@link ShardHandler} that uses the default http client.
@@ -101,23 +123,36 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements Plug
 
   @Override
   public void init(PluginInfo info) {
+    StringBuilder sb = new StringBuilder();
     NamedList args = info.initArgs;
-    this.soTimeout = getParameter(args, HttpClientUtil.PROP_SO_TIMEOUT, soTimeout);
-    this.scheme = getParameter(args, INIT_URL_SCHEME, "http://");
-    this.scheme = (this.scheme.endsWith("://")) ? this.scheme : this.scheme + "://";
-    this.connectionTimeout = getParameter(args, HttpClientUtil.PROP_CONNECTION_TIMEOUT, connectionTimeout);
-    this.maxConnectionsPerHost = getParameter(args, HttpClientUtil.PROP_MAX_CONNECTIONS_PER_HOST, maxConnectionsPerHost);
-    this.corePoolSize = getParameter(args, INIT_CORE_POOL_SIZE, corePoolSize);
-    this.maximumPoolSize = getParameter(args, INIT_MAX_POOL_SIZE, maximumPoolSize);
-    this.keepAliveTime = getParameter(args, MAX_THREAD_IDLE_TIME, keepAliveTime);
-    this.queueSize = getParameter(args, INIT_SIZE_OF_QUEUE, queueSize);
-    this.accessPolicy = getParameter(args, INIT_FAIRNESS_POLICY, accessPolicy);
+    this.soTimeout = getParameter(args, HttpClientUtil.PROP_SO_TIMEOUT, soTimeout,sb);
+    this.scheme = getParameter(args, INIT_URL_SCHEME, null,sb);
+    if(StringUtils.endsWith(this.scheme, "://")) {
+      this.scheme = StringUtils.removeEnd(this.scheme, "://");
+    }
+
+    this.connectionTimeout = getParameter(args, HttpClientUtil.PROP_CONNECTION_TIMEOUT, connectionTimeout, sb);
+    this.maxConnectionsPerHost = getParameter(args, HttpClientUtil.PROP_MAX_CONNECTIONS_PER_HOST, maxConnectionsPerHost,sb);
+    this.maxConnections = getParameter(args, HttpClientUtil.PROP_MAX_CONNECTIONS, maxConnections,sb);
+    this.corePoolSize = getParameter(args, INIT_CORE_POOL_SIZE, corePoolSize,sb);
+    this.maximumPoolSize = getParameter(args, INIT_MAX_POOL_SIZE, maximumPoolSize,sb);
+    this.keepAliveTime = getParameter(args, MAX_THREAD_IDLE_TIME, keepAliveTime,sb);
+    this.queueSize = getParameter(args, INIT_SIZE_OF_QUEUE, queueSize,sb);
+    this.accessPolicy = getParameter(args, INIT_FAIRNESS_POLICY, accessPolicy,sb);
+    this.useRetries = getParameter(args, USE_RETRIES, useRetries,sb);
+    log.info("created with {}",sb);
+    
+    // magic sysprop to make tests reproducible: set by SolrTestCaseJ4.
+    String v = System.getProperty("tests.shardhandler.randomSeed");
+    if (v != null) {
+      r.setSeed(Long.parseLong(v));
+    }
 
     BlockingQueue<Runnable> blockingQueue = (this.queueSize == -1) ?
         new SynchronousQueue<Runnable>(this.accessPolicy) :
         new ArrayBlockingQueue<Runnable>(this.queueSize, this.accessPolicy);
 
-    this.commExecutor = new ThreadPoolExecutor(
+    this.commExecutor = new ExecutorUtil.MDCAwareThreadPoolExecutor(
         this.corePoolSize,
         this.maximumPoolSize,
         this.keepAliveTime, TimeUnit.SECONDS,
@@ -127,28 +162,39 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements Plug
 
     ModifiableSolrParams clientParams = new ModifiableSolrParams();
     clientParams.set(HttpClientUtil.PROP_MAX_CONNECTIONS_PER_HOST, maxConnectionsPerHost);
-    clientParams.set(HttpClientUtil.PROP_MAX_CONNECTIONS, 10000);
+    clientParams.set(HttpClientUtil.PROP_MAX_CONNECTIONS, maxConnections);
     clientParams.set(HttpClientUtil.PROP_SO_TIMEOUT, soTimeout);
     clientParams.set(HttpClientUtil.PROP_CONNECTION_TIMEOUT, connectionTimeout);
-    clientParams.set(HttpClientUtil.PROP_USE_RETRY, false);
-    this.defaultClient = HttpClientUtil.createClient(clientParams);
-
-    try {
-      loadbalancer = new LBHttpSolrServer(defaultClient);
-    } catch (MalformedURLException e) {
-      // should be impossible since we're not passing any URLs here
-      throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
+    if (!useRetries) {
+      clientParams.set(HttpClientUtil.PROP_USE_RETRY, false);
     }
-
+    this.defaultClient = HttpClientUtil.createClient(clientParams);
+    
+    // must come after createClient
+    if (useRetries) {
+      // our default retry handler will never retry on IOException if the request has been sent already,
+      // but for these read only requests we can use the standard DefaultHttpRequestRetryHandler rules
+      ((DefaultHttpClient) this.defaultClient).setHttpRequestRetryHandler(new DefaultHttpRequestRetryHandler());
+    }
+    
+    this.loadbalancer = createLoadbalancer(defaultClient);
   }
 
-  private <T> T getParameter(NamedList initArgs, String configKey, T defaultValue) {
+  protected ThreadPoolExecutor getThreadPoolExecutor(){
+    return this.commExecutor;
+  }
+
+  protected LBHttpSolrClient createLoadbalancer(HttpClient httpClient){
+    return new LBHttpSolrClient(httpClient);
+  }
+
+  protected <T> T getParameter(NamedList initArgs, String configKey, T defaultValue, StringBuilder sb) {
     T toReturn = defaultValue;
     if (initArgs != null) {
       T temp = (T) initArgs.get(configKey);
       toReturn = (temp != null) ? temp : defaultValue;
     }
-    log.info("Setting {} to: {}", configKey, toReturn);
+    if(sb!=null && toReturn != null) sb.append(configKey).append(" : ").append(toReturn).append(",");
     return toReturn;
   }
 
@@ -157,24 +203,76 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements Plug
   public void close() {
     try {
       ExecutorUtil.shutdownNowAndAwaitTermination(commExecutor);
-    } catch (Throwable e) {
-      SolrException.log(log, e);
-    }
-    
-    try {
-      if(defaultClient != null) {
-        defaultClient.getConnectionManager().shutdown();
+    } finally {
+      try {
+        if (defaultClient != null) {
+          defaultClient.getConnectionManager().shutdown();
+        }
+      } finally {
+        
+        if (loadbalancer != null) {
+          loadbalancer.close();
+        }
       }
-    } catch (Throwable e) {
-      SolrException.log(log, e);
     }
-    try {
-      if(loadbalancer != null) {
-        loadbalancer.shutdown();
-      }
-    } catch (Throwable e) {
-      SolrException.log(log, e);
+  }
+
+  /**
+   * Makes a request to one or more of the given urls, using the configured load balancer.
+   *
+   * @param req The solr search request that should be sent through the load balancer
+   * @param urls The list of solr server urls to load balance across
+   * @return The response from the request
+   */
+  public LBHttpSolrClient.Rsp makeLoadBalancedRequest(final QueryRequest req, List<String> urls)
+    throws SolrServerException, IOException {
+    return loadbalancer.request(new LBHttpSolrClient.Req(req, urls));
+  }
+
+  /**
+   * Creates a randomized list of urls for the given shard.
+   *
+   * @param shard the urls for the shard, separated by '|'
+   * @return A list of valid urls (including protocol) that are replicas for the shard
+   */
+  public List<String> makeURLList(String shard) {
+    List<String> urls = StrUtils.splitSmart(shard, "|", true);
+
+    // convert shard to URL
+    for (int i=0; i<urls.size(); i++) {
+      urls.set(i, buildUrl(urls.get(i)));
     }
 
+    //
+    // Shuffle the list instead of use round-robin by default.
+    // This prevents accidental synchronization where multiple shards could get in sync
+    // and query the same replica at the same time.
+    //
+    if (urls.size() > 1)
+      Collections.shuffle(urls, r);
+
+    return urls;
+  }
+
+  /**
+   * Creates a new completion service for use by a single set of distributed requests.
+   */
+  public CompletionService newCompletionService() {
+    return new ExecutorCompletionService<ShardResponse>(commExecutor);
+  }
+  
+  /**
+   * Rebuilds the URL replacing the URL scheme of the passed URL with the
+   * configured scheme replacement.If no scheme was configured, the passed URL's
+   * scheme is left alone.
+   */
+  private String buildUrl(String url) {
+    if(!URLUtil.hasScheme(url)) {
+      return StringUtils.defaultIfEmpty(scheme, DEFAULT_SCHEME) + "://" + url;
+    } else if(StringUtils.isNotEmpty(scheme)) {
+      return scheme + "://" + URLUtil.removeScheme(url);
+    }
+    
+    return url;
   }
 }

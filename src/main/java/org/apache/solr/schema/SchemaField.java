@@ -17,20 +17,18 @@
 
 package org.apache.solr.schema;
 
-import org.apache.solr.common.SolrException;
-import org.apache.lucene.index.IndexableField;
-import org.apache.lucene.search.SortField;
-import org.apache.solr.common.util.SimpleOrderedMap;
-import org.apache.solr.common.util.StrUtils;
-import org.apache.solr.search.QParser;
-
-import org.apache.solr.response.TextResponseWriter;
-
+import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.io.IOException;
+
+import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.search.SortField;
+import org.apache.solr.common.SolrException;
+import org.apache.solr.common.util.SimpleOrderedMap;
+import org.apache.solr.response.TextResponseWriter;
+import org.apache.solr.search.QParser;
 
 /**
  * Encapsulates all information about a Field in a Solr Schema
@@ -49,7 +47,7 @@ public final class SchemaField extends FieldProperties {
   boolean required = false;  // this can't be final since it may be changed dynamically
   
   /** Declared field property overrides */
-  Map<String,String> args = Collections.emptyMap();
+  Map<String,?> args = Collections.emptyMap();
 
 
   /** Create a new SchemaField with the given name and type,
@@ -70,7 +68,7 @@ public final class SchemaField extends FieldProperties {
  /** Create a new SchemaField with the given name and type,
    * and with the specified properties.  Properties are *not*
    * inherited from the type in this case, so users of this
-   * constructor should derive the properties from type.getProperties()
+   * constructor should derive the properties from type.getSolrProperties()
    *  using all the default properties from the type.
    */
   public SchemaField(String name, FieldType type, int properties, String defaultValue ) {
@@ -79,7 +77,7 @@ public final class SchemaField extends FieldProperties {
     this.properties = properties;
     this.defaultValue = defaultValue;
     
-    // initalize with the required property flag
+    // initialize with the required property flag
     required = (properties & REQUIRED) !=0;
 
     type.checkSchemaField(this);
@@ -95,11 +93,8 @@ public final class SchemaField extends FieldProperties {
   public boolean storeTermVector() { return (properties & STORE_TERMVECTORS)!=0; }
   public boolean storeTermPositions() { return (properties & STORE_TERMPOSITIONS)!=0; }
   public boolean storeTermOffsets() { return (properties & STORE_TERMOFFSETS)!=0; }
+  public boolean storeTermPayloads() { return (properties & STORE_TERMPAYLOADS)!=0; }
   public boolean omitNorms() { return (properties & OMIT_NORMS)!=0; }
-
-  /** @deprecated Use {@link #omitTermFreqAndPositions} */
-  @Deprecated
-  public boolean omitTf() { return omitTermFreqAndPositions(); }
 
   public boolean omitTermFreqAndPositions() { return (properties & OMIT_TF_POSITIONS)!=0; }
   public boolean omitPositions() { return (properties & OMIT_POSITIONS)!=0; }
@@ -109,6 +104,7 @@ public final class SchemaField extends FieldProperties {
   public boolean sortMissingFirst() { return (properties & SORT_MISSING_FIRST)!=0; }
   public boolean sortMissingLast() { return (properties & SORT_MISSING_LAST)!=0; }
   public boolean isRequired() { return required; } 
+  public Map<String,?> getArgs() { return Collections.unmodifiableMap(args); }
 
   // things that should be determined by field type, not set as options
   boolean isTokenized() { return (properties & TOKENIZED)!=0; }
@@ -195,14 +191,14 @@ public final class SchemaField extends FieldProperties {
     
   }
 
-  static SchemaField create(String name, FieldType ft, Map<String,String> props) {
+  static SchemaField create(String name, FieldType ft, Map<String,?> props) {
 
     String defaultValue = null;
     if (props.containsKey(DEFAULT_VALUE)) {
-      defaultValue = props.get(DEFAULT_VALUE);
+      defaultValue = (String)props.get(DEFAULT_VALUE);
     }
     SchemaField field = new SchemaField(name, ft, calcProps(name, ft, props), defaultValue);
-    field.args = new HashMap<String,String>(props);
+    field.args = new HashMap<>(props);
     return field;
   }
 
@@ -220,9 +216,9 @@ public final class SchemaField extends FieldProperties {
     return new SchemaField(name, ft, props, defValue);
   }
 
-  static int calcProps(String name, FieldType ft, Map<String, String> props) {
-    int trueProps = parseProperties(props,true);
-    int falseProps = parseProperties(props,false);
+  static int calcProps(String name, FieldType ft, Map<String,?> props) {
+    int trueProps = parseProperties(props,true,true);
+    int falseProps = parseProperties(props,false,true);
 
     int p = ft.properties;
 
@@ -240,13 +236,21 @@ public final class SchemaField extends FieldProperties {
 
     if (on(falseProps,INDEXED)) {
       int pp = (INDEXED 
-              | STORE_TERMVECTORS | STORE_TERMPOSITIONS | STORE_TERMOFFSETS
-              | SORT_MISSING_FIRST | SORT_MISSING_LAST);
+              | STORE_TERMVECTORS | STORE_TERMPOSITIONS | STORE_TERMOFFSETS | STORE_TERMPAYLOADS);
       if (on(pp,trueProps)) {
         throw new RuntimeException("SchemaField: " + name + " conflicting 'true' field options for non-indexed field:" + props);
       }
       p &= ~pp;
     }
+    
+    if (on(falseProps,INDEXED) && on(falseProps,DOC_VALUES)) {
+      int pp = (SORT_MISSING_FIRST | SORT_MISSING_LAST);
+      if (on(pp,trueProps)) {
+        throw new RuntimeException("SchemaField: " + name + " conflicting 'true' field options for non-indexed/non-docValues field:" + props);
+      }
+      p &= ~pp;
+    }
+    
     if (on(falseProps,INDEXED)) {
       int pp = (OMIT_NORMS | OMIT_TF_POSITIONS | OMIT_POSITIONS);
       if (on(pp,falseProps)) {
@@ -265,7 +269,7 @@ public final class SchemaField extends FieldProperties {
     }
 
     if (on(falseProps,STORE_TERMVECTORS)) {
-      int pp = (STORE_TERMVECTORS | STORE_TERMPOSITIONS | STORE_TERMOFFSETS);
+      int pp = (STORE_TERMVECTORS | STORE_TERMPOSITIONS | STORE_TERMOFFSETS | STORE_TERMPAYLOADS);
       if (on(pp,trueProps)) {
         throw new RuntimeException("SchemaField: " + name + " conflicting termvector field options:" + props);
       }
@@ -301,12 +305,12 @@ public final class SchemaField extends FieldProperties {
   }
 
   /**
-   * Get a map of property name -> value for this field.  If showDefaults is true,
+   * Get a map of property name -&gt; value for this field.  If showDefaults is true,
    * include default properties (those inherited from the declared property type and
    * not overridden in the field declaration).
    */
   public SimpleOrderedMap<Object> getNamedPropertyValues(boolean showDefaults) {
-    SimpleOrderedMap<Object> properties = new SimpleOrderedMap<Object>();
+    SimpleOrderedMap<Object> properties = new SimpleOrderedMap<>();
     properties.add(FIELD_NAME, getName());
     properties.add(TYPE_NAME, getType().getTypeName());
     if (showDefaults) {
@@ -319,6 +323,7 @@ public final class SchemaField extends FieldProperties {
       properties.add(getPropertyName(STORE_TERMVECTORS), storeTermVector());
       properties.add(getPropertyName(STORE_TERMPOSITIONS), storeTermPositions());
       properties.add(getPropertyName(STORE_TERMOFFSETS), storeTermOffsets());
+      properties.add(getPropertyName(STORE_TERMPAYLOADS), storeTermPayloads());
       properties.add(getPropertyName(OMIT_NORMS), omitNorms());
       properties.add(getPropertyName(OMIT_TF_POSITIONS), omitTermFreqAndPositions());
       properties.add(getPropertyName(OMIT_POSITIONS), omitPositions());
@@ -334,13 +339,14 @@ public final class SchemaField extends FieldProperties {
       // The BINARY property is always false
       // properties.add(getPropertyName(BINARY), isBinary());
     } else {
-      for (Map.Entry<String,String> arg : args.entrySet()) {
+      for (Map.Entry<String,?> arg : args.entrySet()) {
         String key = arg.getKey();
-        String value = arg.getValue();
+        Object value = arg.getValue();
         if (key.equals(DEFAULT_VALUE)) {
           properties.add(key, value);
         } else {
-          properties.add(key, StrUtils.parseBool(value, false));
+          boolean boolVal = value instanceof Boolean ? (Boolean)value : Boolean.parseBoolean(value.toString());
+          properties.add(key, boolVal);
         }
       }
     }

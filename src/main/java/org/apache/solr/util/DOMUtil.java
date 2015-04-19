@@ -17,7 +17,12 @@ package org.apache.solr.util;
  * limitations under the License.
  */
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.util.NamedList;
@@ -25,6 +30,8 @@ import org.apache.solr.common.util.StrUtils;
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+
+import static org.apache.solr.common.params.CommonParams.NAME;
 
 /**
  *
@@ -38,7 +45,7 @@ public class DOMUtil {
   }
 
   public static Map<String,String> toMapExcept(NamedNodeMap attrs, String... exclusions) {
-    Map<String,String> args = new HashMap<String,String>();
+    Map<String,String> args = new HashMap<>();
     outer: for (int j=0; j<attrs.getLength(); j++) {
       Node attr = attrs.item(j);
 
@@ -101,7 +108,7 @@ public class DOMUtil {
   }
 
   public static NamedList<Object> nodesToNamedList(NodeList nlst) {
-    NamedList<Object> clst = new NamedList<Object>();
+    NamedList<Object> clst = new NamedList<>();
     for (int i=0; i<nlst.getLength(); i++) {
       addToNamedList(nlst.item(i), clst, null);
     }
@@ -137,7 +144,7 @@ public class DOMUtil {
 
     final String type = nd.getNodeName();
 
-    final String name = getAttr(nd, "name");
+    final String name = getAttr(nd, NAME);
 
     Object val=null;
 
@@ -289,30 +296,26 @@ public class DOMUtil {
 
       // handle child by node type
       if (child.getNodeType() == Node.TEXT_NODE) {
-        child.setNodeValue(substituteProperty(child.getNodeValue(), properties));
+        child.setNodeValue(PropertiesUtil.substituteProperty(child.getNodeValue(), properties));
       } else if (child.getNodeType() == Node.ELEMENT_NODE) {
         // handle child elements with recursive call
         NamedNodeMap attributes = child.getAttributes();
         for (int i = 0; i < attributes.getLength(); i++) {
           Node attribute = attributes.item(i);
-          attribute.setNodeValue(substituteProperty(attribute.getNodeValue(), properties));
+          attribute.setNodeValue(PropertiesUtil.substituteProperty(attribute.getNodeValue(), properties));
         }
         substituteProperties(child, properties);
       }
     }
   }
-
-  /*
-   * This method borrowed from Ant's PropertyHelper.replaceProperties:
-   *   http://svn.apache.org/repos/asf/ant/core/trunk/src/main/org/apache/tools/ant/PropertyHelper.java
-   */
+  
   public static String substituteProperty(String value, Properties coreProperties) {
     if (value == null || value.indexOf('$') == -1) {
       return value;
     }
 
-    List<String> fragments = new ArrayList<String>();
-    List<String> propertyRefs = new ArrayList<String>();
+    List<String> fragments = new ArrayList<>();
+    List<String> propertyRefs = new ArrayList<>();
     parsePropertyString(value, fragments, propertyRefs);
 
     StringBuilder sb = new StringBuilder();
@@ -343,7 +346,7 @@ public class DOMUtil {
     }
     return sb.toString();
   }
-
+  
   /*
    * This method borrowed from Ant's PropertyHelper.parsePropertyStringDefault:
    *   http://svn.apache.org/repos/asf/ant/core/trunk/src/main/org/apache/tools/ant/PropertyHelper.java
@@ -401,5 +404,7 @@ public class DOMUtil {
           fragments.add(value.substring(prev));
       }
   }
+
+
 
 }

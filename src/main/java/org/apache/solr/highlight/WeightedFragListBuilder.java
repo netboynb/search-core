@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -41,10 +41,5 @@ public class WeightedFragListBuilder extends HighlightingPluginBase implements
   @Override
   public String getDescription() {
     return "WeightedFragListBuilder";
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: http://svn.apache.org/repos/asf/lucene/dev/branches/branch_4x/solr/core/src/java/org/apache/solr/highlight/WeightedFragListBuilder.java $";
   }
 }

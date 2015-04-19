@@ -21,7 +21,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FilenameFilter;
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -63,7 +65,7 @@ public class VersionedFile
           });
           Arrays.sort(names);
           f = new File(dir, names[names.length-1]);
-          oldFiles = new ArrayList<File>();
+          oldFiles = new ArrayList<>();
           for (int i=0; i<names.length-1; i++) {
             oldFiles.add(new File(dir, names[i]));
           }
@@ -88,14 +90,19 @@ public class VersionedFile
     return is;
   }
 
-  private static final Set<File> deleteList = new HashSet<File>();
+  private static final Set<File> deleteList = new HashSet<>();
   private static synchronized void delete(Collection<File> files) {
     synchronized (deleteList) {
       deleteList.addAll(files);
-      List<File> deleted = new ArrayList<File>();
+      List<File> deleted = new ArrayList<>();
       for (File df : deleteList) {
         try {
-          df.delete();
+          try {
+            Files.deleteIfExists(df.toPath());
+          } catch (IOException cause) {
+            // TODO: should this class care if a file couldnt be deleted?
+            // this just emulates previous behavior, where only SecurityException would be handled.
+          }
           // deleteList.remove(df);
           deleted.add(df);
         } catch (SecurityException e) {

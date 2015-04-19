@@ -23,10 +23,14 @@ import java.util.*;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.IndexableField;
+import org.apache.solr.client.solrj.io.TupleStream;
+import org.apache.solr.client.solrj.io.Tuple;
 import org.apache.lucene.util.BytesRef;
+import org.apache.solr.common.EnumFieldValue;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.util.Base64;
+import org.apache.solr.schema.TrieDateField;
 import org.apache.solr.util.FastWriter;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.request.SolrQueryRequest;
@@ -34,7 +38,6 @@ import org.apache.solr.response.transform.DocTransformer;
 import org.apache.solr.response.transform.TransformContext;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
-import org.apache.solr.schema.DateField;
 import org.apache.solr.search.DocList;
 import org.apache.solr.search.ReturnFields;
 
@@ -77,8 +80,6 @@ public abstract class TextResponseWriter {
     }
     returnFields = rsp.getReturnFields();
   }
-
-
 
   /** done with this ResponseWriter... make sure any buffers are flushed to writer */
   public void close() throws IOException {
@@ -186,18 +187,24 @@ public abstract class TextResponseWriter {
       writeMap(name, (Map)val, false, true);
     } else if (val instanceof NamedList) {
       writeNamedList(name, (NamedList)val);
+    } else if (val instanceof TupleStream) {
+      writeTupleStream((TupleStream) val);
     } else if (val instanceof Iterable) {
       writeArray(name,((Iterable)val).iterator());
     } else if (val instanceof Object[]) {
       writeArray(name,(Object[])val);
     } else if (val instanceof Iterator) {
-      writeArray(name,(Iterator)val);
+      writeArray(name, (Iterator) val);
     } else if (val instanceof byte[]) {
       byte[] arr = (byte[])val;
       writeByteArr(name, arr, 0, arr.length);
     } else if (val instanceof BytesRef) {
       BytesRef arr = (BytesRef)val;
       writeByteArr(name, arr.bytes, arr.offset, arr.length);
+    } else if (val instanceof EnumFieldValue) {
+      writeStr(name, val.toString(), true);
+    } else if (val instanceof WriteableValue) {
+      ((WriteableValue)val).write(name, this);
     } else {
       // default... for debugging only
       writeStr(name, val.getClass().getName() + ':' + val.toString(), true);
@@ -224,28 +231,9 @@ public abstract class TextResponseWriter {
     writeEndDocumentList();
   }
 
-  public final SolrDocument toSolrDocument( Document doc )
+  public final SolrDocument toSolrDocument( Document doc ) 
   {
-    SolrDocument out = new SolrDocument();
-    for( IndexableField f : doc) {
-      // Make sure multivalued fields are represented as lists
-      Object existing = out.get(f.name());
-      if (existing == null) {
-        SchemaField sf = schema.getFieldOrNull(f.name());
-        if (sf != null && sf.multiValued()) {
-          List<Object> vals = new ArrayList<Object>();
-          vals.add( f );
-          out.setField( f.name(), vals );
-        } 
-        else{
-          out.setField( f.name(), f );
-        }
-      }
-      else {
-        out.addField( f.name(), f );
-      }
-    }
-    return out;
+    return ResponseWriterUtil.toSolrDocument(doc, schema);
   }
   
   public final void writeDocuments(String name, ResultContext res, ReturnFields fields ) throws IOException {
@@ -328,6 +316,26 @@ public abstract class TextResponseWriter {
     }
   }
 
+  public void writeTupleStream(TupleStream tupleStream) throws IOException {
+    tupleStream.open();
+    writeStartDocumentList("response", -1, -1, -1, null);
+    boolean isFirst = true;
+    while(true) {
+      Tuple tuple = tupleStream.read();
+      if(!isFirst) {
+        writer.write(",");
+      }
+      writeMap(null, tuple.fields, false, true);
+      isFirst = false;
+      if(tuple.EOF) {
+        break;
+      }
+    }
+    writeEndDocumentList();
+    tupleStream.close();
+  }
+
+
   /** if this form of the method is called, val is the Java string form of a double */
   public abstract void writeDouble(String name, String val) throws IOException;
 
@@ -344,7 +352,7 @@ public abstract class TextResponseWriter {
 
 
   public void writeDate(String name, Date val) throws IOException {
-    writeDate(name, DateField.formatExternal(val));
+    writeDate(name, TrieDateField.formatExternal(val));
   }
   
 

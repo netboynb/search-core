@@ -17,33 +17,33 @@
 
 package org.apache.solr.parser;
 
+import java.io.StringReader;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.analysis.CachingTokenFilter;
-import org.apache.lucene.analysis.TokenStream;
-import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
-import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.analysis.util.TokenFilterFactory;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.AutomatonQuery;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MultiPhraseQuery;
 import org.apache.lucene.search.MultiTermQuery;
 import org.apache.lucene.search.PhraseQuery;
-import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.RegexpQuery;
-import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.WildcardQuery;
-import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.QueryBuilder;
 import org.apache.lucene.util.ToStringUtils;
 import org.apache.lucene.util.Version;
+import org.apache.lucene.util.automaton.Automata;
 import org.apache.lucene.util.automaton.Automaton;
-import org.apache.lucene.util.automaton.BasicAutomata;
-import org.apache.lucene.util.automaton.BasicOperations;
-import org.apache.lucene.util.automaton.SpecialOperations;
+import org.apache.lucene.util.automaton.Operations;
 import org.apache.solr.analysis.ReversedWildcardFilterFactory;
 import org.apache.solr.analysis.TokenizerChain;
 import org.apache.solr.common.SolrException;
@@ -55,18 +55,10 @@ import org.apache.solr.schema.TextField;
 import org.apache.solr.search.QParser;
 import org.apache.solr.search.SyntaxError;
 
-import java.io.IOException;
-import java.io.StringReader;
-import java.util.ArrayList;
-import java.util.EnumSet;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 /** This class is overridden by QueryParser in QueryParser.jj
  * and acts to separate the majority of the Java code from the .jj grammar file. 
  */
-public abstract class SolrQueryParserBase {
+public abstract class SolrQueryParserBase extends QueryBuilder {
 
 
   static final int CONJ_NONE   = 0;
@@ -87,9 +79,8 @@ public abstract class SolrQueryParserBase {
   /** The default operator that parser uses to combine query terms */
   Operator operator = OR_OPERATOR;
 
-  MultiTermQuery.RewriteMethod multiTermRewriteMethod = MultiTermQuery.CONSTANT_SCORE_AUTO_REWRITE_DEFAULT;
+  MultiTermQuery.RewriteMethod multiTermRewriteMethod = MultiTermQuery.CONSTANT_SCORE_REWRITE;
   boolean allowLeadingWildcard = true;
-  boolean enablePositionIncrements = true;
 
   String defaultField;
   int phraseSlop = 0;     // default slop for phrase queries
@@ -101,7 +92,6 @@ public abstract class SolrQueryParserBase {
 
   protected IndexSchema schema;
   protected QParser parser;
-  protected Analyzer analyzer;
 
   // implementation detail - caching ReversedWildcardFilterFactory based on type
   private Map<FieldType, ReversedWildcardFilterFactory> leadingWildcards;
@@ -124,7 +114,7 @@ public abstract class SolrQueryParserBase {
       return field;
     }
     private final static Map<String,MagicFieldName> lookup
-        = new HashMap<String,MagicFieldName>();
+        = new HashMap<>();
     static {
       for(MagicFieldName s : EnumSet.allOf(MagicFieldName.class))
         lookup.put(s.toString(), s);
@@ -137,6 +127,7 @@ public abstract class SolrQueryParserBase {
 
   // So the generated QueryParser(CharStream) won't error out
   protected SolrQueryParserBase() {
+    super(null);
   }
   // the generated parser will create these in QueryParser
   public abstract void ReInit(CharStream stream);
@@ -147,7 +138,7 @@ public abstract class SolrQueryParserBase {
     this.schema = parser.getReq().getSchema();
     this.parser = parser;
     this.defaultField = defaultField;
-    this.analyzer = schema.getQueryAnalyzer();
+    setAnalyzer(schema.getQueryAnalyzer());
   }
 
     /** Parses a query string, returning a {@link org.apache.lucene.search.Query}.
@@ -160,13 +151,9 @@ public abstract class SolrQueryParserBase {
       Query res = TopLevelQuery(null);  // pass null so we can tell later if an explicit field was provided or not
       return res!=null ? res : newBooleanQuery(false);
     }
-    catch (ParseException tme) {
+    catch (ParseException | TokenMgrError tme) {
       throw new SyntaxError("Cannot parse '" +query+ "': " + tme.getMessage(), tme);
-    }
-    catch (TokenMgrError tme) {
-      throw new SyntaxError("Cannot parse '" +query+ "': " + tme.getMessage(), tme);
-    }
-    catch (BooleanQuery.TooManyClauses tmc) {
+    } catch (BooleanQuery.TooManyClauses tmc) {
       throw new SyntaxError("Cannot parse '" +query+ "': too many boolean clauses", tmc);
     }
   }
@@ -282,31 +269,10 @@ public abstract class SolrQueryParserBase {
   }
 
   /**
-   * Set to <code>true</code> to enable position increments in result query.
-   * <p>
-   * When set, result phrase and multi-phrase queries will
-   * be aware of position increments.
-   * Useful when e.g. a StopFilter increases the position increment of
-   * the token that follows an omitted token.
-   * <p>
-   * Default: true.
-   */
-  public void setEnablePositionIncrements(boolean enable) {
-    this.enablePositionIncrements = enable;
-  }
-
-  /**
-   * @see #setEnablePositionIncrements(boolean)
-   */
-  public boolean getEnablePositionIncrements() {
-    return enablePositionIncrements;
-  }
-
-  /**
    * Sets the boolean operator of the QueryParser.
    * In default mode (<code>OR_OPERATOR</code>) terms without any modifiers
    * are considered optional: for example <code>capital of Hungary</code> is equal to
-   * <code>capital OR of OR Hungary</code>.<br/>
+   * <code>capital OR of OR Hungary</code>.<br>
    * In <code>AND_OPERATOR</code> mode terms are considered to be in conjunction: the
    * above mentioned query is parsed as <code>capital AND of AND Hungary</code>
    */
@@ -325,7 +291,7 @@ public abstract class SolrQueryParserBase {
 
 
   /**
-   * By default QueryParser uses {@link org.apache.lucene.search.MultiTermQuery#CONSTANT_SCORE_AUTO_REWRITE_DEFAULT}
+   * By default QueryParser uses {@link org.apache.lucene.search.MultiTermQuery#CONSTANT_SCORE_REWRITE}
    * when creating a PrefixQuery, WildcardQuery or RangeQuery. This implementation is generally preferable because it
    * a) Runs faster b) Does not have the scarcity of terms unduly influence score
    * c) avoids any "TooManyBooleanClauses" exception.
@@ -400,165 +366,8 @@ public abstract class SolrQueryParserBase {
 
 
   protected Query newFieldQuery(Analyzer analyzer, String field, String queryText, boolean quoted)  throws SyntaxError {
-    // Use the analyzer to get all the tokens, and then build a TermQuery,
-    // PhraseQuery, or nothing based on the term count
-
-    TokenStream source;
-    try {
-      source = analyzer.tokenStream(field, new StringReader(queryText));
-      source.reset();
-    } catch (IOException e) {
-      throw new SyntaxError("Unable to initialize TokenStream to analyze query text", e);
-    }
-    CachingTokenFilter buffer = new CachingTokenFilter(source);
-    TermToBytesRefAttribute termAtt = null;
-    PositionIncrementAttribute posIncrAtt = null;
-    int numTokens = 0;
-
-    buffer.reset();
-
-    if (buffer.hasAttribute(TermToBytesRefAttribute.class)) {
-      termAtt = buffer.getAttribute(TermToBytesRefAttribute.class);
-    }
-    if (buffer.hasAttribute(PositionIncrementAttribute.class)) {
-      posIncrAtt = buffer.getAttribute(PositionIncrementAttribute.class);
-    }
-
-    int positionCount = 0;
-    boolean severalTokensAtSamePosition = false;
-
-    boolean hasMoreTokens = false;
-    if (termAtt != null) {
-      try {
-        hasMoreTokens = buffer.incrementToken();
-        while (hasMoreTokens) {
-          numTokens++;
-          int positionIncrement = (posIncrAtt != null) ? posIncrAtt.getPositionIncrement() : 1;
-          if (positionIncrement != 0) {
-            positionCount += positionIncrement;
-          } else {
-            severalTokensAtSamePosition = true;
-          }
-          hasMoreTokens = buffer.incrementToken();
-        }
-      } catch (IOException e) {
-        // ignore
-      }
-    }
-    try {
-      // rewind the buffer stream
-      buffer.reset();
-
-      // close original stream - all tokens buffered
-      source.close();
-    }
-    catch (IOException e) {
-      throw new SyntaxError("Cannot close TokenStream analyzing query text", e);
-    }
-
-    BytesRef bytes = termAtt == null ? null : termAtt.getBytesRef();
-
-    if (numTokens == 0)
-      return null;
-    else if (numTokens == 1) {
-      try {
-        boolean hasNext = buffer.incrementToken();
-        assert hasNext == true;
-        termAtt.fillBytesRef();
-      } catch (IOException e) {
-        // safe to ignore, because we know the number of tokens
-      }
-      return newTermQuery(new Term(field, BytesRef.deepCopyOf(bytes)));
-    } else {
-      if (severalTokensAtSamePosition || (!quoted && !autoGeneratePhraseQueries)) {
-        if (positionCount == 1 || (!quoted && !autoGeneratePhraseQueries)) {
-          // no phrase query:
-          BooleanQuery q = newBooleanQuery(positionCount == 1);
-
-          BooleanClause.Occur occur = positionCount > 1 && operator == AND_OPERATOR ?
-            BooleanClause.Occur.MUST : BooleanClause.Occur.SHOULD;
-
-          for (int i = 0; i < numTokens; i++) {
-            try {
-              boolean hasNext = buffer.incrementToken();
-              assert hasNext == true;
-              termAtt.fillBytesRef();
-            } catch (IOException e) {
-              // safe to ignore, because we know the number of tokens
-            }
-            Query currentQuery = newTermQuery(
-                new Term(field, BytesRef.deepCopyOf(bytes)));
-            q.add(currentQuery, occur);
-          }
-          return q;
-        }
-        else {
-          // phrase query:
-          MultiPhraseQuery mpq = newMultiPhraseQuery();
-          mpq.setSlop(phraseSlop);
-          List<Term> multiTerms = new ArrayList<Term>();
-          int position = -1;
-          for (int i = 0; i < numTokens; i++) {
-            int positionIncrement = 1;
-            try {
-              boolean hasNext = buffer.incrementToken();
-              assert hasNext == true;
-              termAtt.fillBytesRef();
-              if (posIncrAtt != null) {
-                positionIncrement = posIncrAtt.getPositionIncrement();
-              }
-            } catch (IOException e) {
-              // safe to ignore, because we know the number of tokens
-            }
-
-            if (positionIncrement > 0 && multiTerms.size() > 0) {
-              if (enablePositionIncrements) {
-                mpq.add(multiTerms.toArray(new Term[0]),position);
-              } else {
-                mpq.add(multiTerms.toArray(new Term[0]));
-              }
-              multiTerms.clear();
-            }
-            position += positionIncrement;
-            multiTerms.add(new Term(field, BytesRef.deepCopyOf(bytes)));
-          }
-          if (enablePositionIncrements) {
-            mpq.add(multiTerms.toArray(new Term[0]),position);
-          } else {
-            mpq.add(multiTerms.toArray(new Term[0]));
-          }
-          return mpq;
-        }
-      }
-      else {
-        PhraseQuery pq = newPhraseQuery();
-        pq.setSlop(phraseSlop);
-        int position = -1;
-
-        for (int i = 0; i < numTokens; i++) {
-          int positionIncrement = 1;
-
-          try {
-            boolean hasNext = buffer.incrementToken();
-            assert hasNext == true;
-            termAtt.fillBytesRef();
-            if (posIncrAtt != null) {
-              positionIncrement = posIncrAtt.getPositionIncrement();
-            }
-          } catch (IOException e) {
-            // safe to ignore, because we know the number of tokens
-          }
-
-          if (enablePositionIncrements) {
-            position += positionIncrement;
-            pq.add(new Term(field, BytesRef.deepCopyOf(bytes)),position);
-          } else {
-            pq.add(new Term(field, BytesRef.deepCopyOf(bytes)));
-          }
-        }
-        return pq;
-      }
-    }
+    BooleanClause.Occur occur = operator == Operator.AND ? BooleanClause.Occur.MUST : BooleanClause.Occur.SHOULD;
+    return createFieldQuery(analyzer, occur, field, queryText, quoted || autoGeneratePhraseQueries, phraseSlop);
   }
 
 
@@ -589,16 +398,6 @@ public abstract class SolrQueryParserBase {
     return query;
   }
 
-
- /**
-  * Builds a new BooleanQuery instance
-  * @param disableCoord disable coord
-  * @return new BooleanQuery instance
-  */
-  protected BooleanQuery newBooleanQuery(boolean disableCoord) {
-    return new BooleanQuery(disableCoord);
-  }
-
  /**
   * Builds a new BooleanClause instance
   * @param q sub query
@@ -610,40 +409,13 @@ public abstract class SolrQueryParserBase {
   }
 
   /**
-   * Builds a new TermQuery instance
-   * @param term term
-   * @return new TermQuery instance
-   */
-  protected Query newTermQuery(Term term){
-    return new TermQuery(term);
-  }
-
-  /**
-   * Builds a new PhraseQuery instance
-   * @return new PhraseQuery instance
-   */
-  protected PhraseQuery newPhraseQuery(){
-    return new PhraseQuery();
-  }
-
-  /**
-   * Builds a new MultiPhraseQuery instance
-   * @return new MultiPhraseQuery instance
-   */
-  protected MultiPhraseQuery newMultiPhraseQuery(){
-    return new MultiPhraseQuery();
-  }
-
-  /**
    * Builds a new PrefixQuery instance
    * @param prefix Prefix term
    * @return new PrefixQuery instance
    */
   protected Query newPrefixQuery(Term prefix){
-    PrefixQuery query = new PrefixQuery(prefix);
     SchemaField sf = schema.getField(prefix.field());
-    query.setRewriteMethod(sf.getType().getRewriteMethod(parser, sf));
-    return query;
+    return sf.getType().getPrefixQuery(parser, sf, prefix.text());
   }
 
   /**
@@ -781,13 +553,28 @@ public abstract class SolrQueryParserBase {
 
   // called from parser
   Query handleBoost(Query q, Token boost) {
-    if (boost != null) {
-      float boostVal = Float.parseFloat(boost.image);
-      // avoid boosting null queries, such as those caused by stop words
-      if (q != null) {
-        q.setBoost(q.getBoost() * boostVal);
-      }
+    // q==null check is to avoid boosting null queries, such as those caused by stop words
+    if (boost == null || boost.image.length()==0 || q == null) {
+      return q;
     }
+
+    if (boost.image.charAt(0) == '=') {
+      // syntax looks like foo:x^=3
+      float val = Float.parseFloat(boost.image.substring(1));
+      Query newQ = q;
+      if (// q instanceof FilterQuery ||  // TODO: fix this when FilterQuery is introduced to avoid needless wrapping: SOLR-7219
+          q instanceof ConstantScoreQuery) {
+        newQ.setBoost(val);
+      } else {
+        newQ = new ConstantScoreQuery(q);
+        newQ.setBoost(val);
+      }
+      return newQ;
+    }
+
+    float boostVal = Float.parseFloat(boost.image);
+    q.setBoost(q.getBoost() * boostVal);
+
     return q;
   }
 
@@ -895,13 +682,13 @@ public abstract class SolrQueryParserBase {
 
 
   protected ReversedWildcardFilterFactory getReversedWildcardFilterFactory(FieldType fieldType) {
-    if (leadingWildcards == null) leadingWildcards = new HashMap<FieldType, ReversedWildcardFilterFactory>();
+    if (leadingWildcards == null) leadingWildcards = new HashMap<>();
     ReversedWildcardFilterFactory fac = leadingWildcards.get(fieldType);
     if (fac != null || leadingWildcards.containsKey(fac)) {
       return fac;
     }
 
-    Analyzer a = fieldType.getAnalyzer();
+    Analyzer a = fieldType.getIndexAnalyzer();
     if (a instanceof TokenizerChain) {
       // examine the indexing analysis chain if it supports leading wildcards
       TokenizerChain tc = (TokenizerChain)a;
@@ -956,14 +743,14 @@ public abstract class SolrQueryParserBase {
       FieldType ft = sf.getType();
       // delegate to type for everything except tokenized fields
       if (ft.isTokenized() && sf.indexed()) {
-        return newFieldQuery(analyzer, field, queryText, quoted || (ft instanceof TextField && ((TextField)ft).getAutoGeneratePhraseQueries()));
+        return newFieldQuery(getAnalyzer(), field, queryText, quoted || (ft instanceof TextField && ((TextField)ft).getAutoGeneratePhraseQueries()));
       } else {
         return sf.getType().getFieldQuery(parser, sf, queryText);
       }
     }
 
     // default to a normal field query
-    return newFieldQuery(analyzer, field, queryText, quoted);
+    return newFieldQuery(getAnalyzer(), field, queryText, quoted);
   }
 
 
@@ -1004,19 +791,19 @@ public abstract class SolrQueryParserBase {
       Automaton automaton = WildcardQuery.toAutomaton(term);
       // TODO: we should likely use the automaton to calculate shouldReverse, too.
       if (factory.shouldReverse(termStr)) {
-        automaton = BasicOperations.concatenate(automaton, BasicAutomata.makeChar(factory.getMarkerChar()));
-        SpecialOperations.reverse(automaton);
+        automaton = Operations.concatenate(automaton, Automata.makeChar(factory.getMarkerChar()));
+        automaton = Operations.reverse(automaton);
       } else {
         // reverse wildcardfilter is active: remove false positives
         // fsa representing false positives (markerChar*)
-        Automaton falsePositives = BasicOperations.concatenate(
-            BasicAutomata.makeChar(factory.getMarkerChar()),
-            BasicAutomata.makeAnyString());
+        Automaton falsePositives = Operations.concatenate(
+            Automata.makeChar(factory.getMarkerChar()),
+            Automata.makeAnyString());
         // subtract these away
-        automaton = BasicOperations.minus(automaton, falsePositives);
+        automaton = Operations.minus(automaton, falsePositives, Operations.DEFAULT_MAX_DETERMINIZED_STATES);
       }
       return new AutomatonQuery(term, automaton) {
-        // override toString so its completely transparent
+        // override toString so it's completely transparent
         @Override
         public String toString(String field) {
           StringBuilder buffer = new StringBuilder();

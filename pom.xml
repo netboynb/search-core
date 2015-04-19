@@ -9,7 +9,7 @@
   <url>http://maven.apache.org</url>
   
 	<properties>
-		<lucene.version>4.2.1</lucene.version>
+		<lucene.version>5.1.0</lucene.version>
 	    <jetty.version>8.1.8.v20121106</jetty.version>
 	    <slf4j.version>1.6.4</slf4j.version>
 	    <restlet.version>2.1.4</restlet.version>

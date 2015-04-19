@@ -27,7 +27,9 @@ import java.util.Map;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.solr.client.solrj.SolrResponse;
 import org.apache.solr.cloud.CloudDescriptor;
 import org.apache.solr.cloud.ZkController;
@@ -37,11 +39,11 @@ import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.cloud.ClusterState;
 import org.apache.solr.common.cloud.DocCollection;
+import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.ShardParams;
 import org.apache.solr.common.params.SolrParams;
-import org.apache.solr.common.util.Hash;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.StrUtils;
 import org.apache.solr.core.SolrCore;
@@ -95,6 +97,25 @@ public class RealTimeGetComponent extends SearchComponent
 
     val = params.get("getUpdates");
     if (val != null) {
+      // solrcloud_debug
+      if (log.isDebugEnabled()) {
+        try {
+          RefCounted<SolrIndexSearcher> searchHolder = req.getCore()
+              .getNewestSearcher(false);
+          SolrIndexSearcher searcher = searchHolder.get();
+          try {
+            log.debug(req.getCore().getCoreDescriptor()
+                .getCoreContainer().getZkController().getNodeName()
+                + " min count to sync to (from most recent searcher view) "
+                + searcher.search(new MatchAllDocsQuery(), 1).totalHits);
+          } finally {
+            searchHolder.decref();
+          }
+        } catch (Exception e) {
+          log.debug("Error in solrcloud_debug block", e);
+        }
+      }
+      
       processGetUpdates(rb);
       return;
     }
@@ -109,7 +130,7 @@ public class RealTimeGetComponent extends SearchComponent
     String[] allIds = id==null ? new String[0] : id;
 
     if (ids != null) {
-      List<String> lst = new ArrayList<String>();
+      List<String> lst = new ArrayList<>();
       for (String s : allIds) {
         lst.add(s);
       }
@@ -119,11 +140,12 @@ public class RealTimeGetComponent extends SearchComponent
       allIds = lst.toArray(new String[lst.size()]);
     }
 
-    SchemaField idField = req.getSchema().getUniqueKeyField();
+    SolrCore core = req.getCore();
+    SchemaField idField = core.getLatestSchema().getUniqueKeyField();
     FieldType fieldType = idField.getType();
 
     SolrDocumentList docList = new SolrDocumentList();
-    UpdateLog ulog = req.getCore().getUpdateHandler().getUpdateLog();
+    UpdateLog ulog = core.getUpdateHandler().getUpdateLog();
 
     RefCounted<SolrIndexSearcher> searcherHolder = null;
 
@@ -136,11 +158,11 @@ public class RealTimeGetComponent extends SearchComponent
    try {
      SolrIndexSearcher searcher = null;
 
-     BytesRef idBytes = new BytesRef();
+     BytesRefBuilder idBytes = new BytesRefBuilder();
      for (String idStr : allIds) {
        fieldType.readableToIndexed(idStr, idBytes);
        if (ulog != null) {
-         Object o = ulog.lookup(idBytes);
+         Object o = ulog.lookup(idBytes.get());
          if (o != null) {
            // should currently be a List<Oper,Ver,Doc/Id>
            List entry = (List)o;
@@ -148,7 +170,7 @@ public class RealTimeGetComponent extends SearchComponent
            int oper = (Integer)entry.get(0) & UpdateLog.OPERATION_MASK;
            switch (oper) {
              case UpdateLog.ADD:
-               SolrDocument doc = toSolrDoc((SolrInputDocument)entry.get(entry.size()-1), req.getSchema());
+               SolrDocument doc = toSolrDoc((SolrInputDocument)entry.get(entry.size()-1), core.getLatestSchema());
                if(transformer!=null) {
                  transformer.transform(doc, -1); // unknown docID
                }
@@ -165,16 +187,16 @@ public class RealTimeGetComponent extends SearchComponent
 
        // didn't find it in the update log, so it should be in the newest searcher opened
        if (searcher == null) {
-         searcherHolder = req.getCore().getRealtimeSearcher();
+         searcherHolder = core.getRealtimeSearcher();
          searcher = searcherHolder.get();
        }
 
        // SolrCore.verbose("RealTimeGet using searcher ", searcher);
 
-       int docid = searcher.getFirstMatch(new Term(idField.getName(), idBytes));
+       int docid = searcher.getFirstMatch(new Term(idField.getName(), idBytes.get()));
        if (docid < 0) continue;
-       Document luceneDocument = searcher.doc(docid);
-       SolrDocument doc = toSolrDoc(luceneDocument,  req.getSchema());
+       Document luceneDocument = searcher.doc(docid, rsp.getReturnFields().getLuceneFieldNames());
+       SolrDocument doc = toSolrDoc(luceneDocument,  core.getLatestSchema());
        if( transformer != null ) {
          transformer.transform(doc, docid);
        }
@@ -201,31 +223,46 @@ public class RealTimeGetComponent extends SearchComponent
 
   }
 
+
+  public static SolrInputDocument DELETED = new SolrInputDocument();
+
+  /** returns the SolrInputDocument from the current tlog, or DELETED if it has been deleted, or
+   * null if there is no record of it in the current update log.  If null is returned, it could
+   * still be in the latest index.
+   */
+  public static SolrInputDocument getInputDocumentFromTlog(SolrCore core, BytesRef idBytes) {
+
+    UpdateLog ulog = core.getUpdateHandler().getUpdateLog();
+
+    if (ulog != null) {
+      Object o = ulog.lookup(idBytes);
+      if (o != null) {
+        // should currently be a List<Oper,Ver,Doc/Id>
+        List entry = (List)o;
+        assert entry.size() >= 3;
+        int oper = (Integer)entry.get(0) & UpdateLog.OPERATION_MASK;
+        switch (oper) {
+          case UpdateLog.ADD:
+            return (SolrInputDocument)entry.get(entry.size()-1);
+          case UpdateLog.DELETE:
+            return DELETED;
+          default:
+            throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,  "Unknown Operation! " + oper);
+        }
+      }
+    }
+
+    return null;
+  }
+
   public static SolrInputDocument getInputDocument(SolrCore core, BytesRef idBytes) throws IOException {
     SolrInputDocument sid = null;
     RefCounted<SolrIndexSearcher> searcherHolder = null;
     try {
       SolrIndexSearcher searcher = null;
-      UpdateLog ulog = core.getUpdateHandler().getUpdateLog();
-
-
-      if (ulog != null) {
-        Object o = ulog.lookup(idBytes);
-        if (o != null) {
-          // should currently be a List<Oper,Ver,Doc/Id>
-          List entry = (List)o;
-          assert entry.size() >= 3;
-          int oper = (Integer)entry.get(0) & UpdateLog.OPERATION_MASK;
-          switch (oper) {
-            case UpdateLog.ADD:
-              sid = (SolrInputDocument)entry.get(entry.size()-1);
-              break;
-            case UpdateLog.DELETE:
-              return null;
-            default:
-              throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,  "Unknown Operation! " + oper);
-          }
-        }
+      sid = getInputDocumentFromTlog(core, idBytes);
+      if (sid == DELETED) {
+        return null;
       }
 
       if (sid == null) {
@@ -236,12 +273,12 @@ public class RealTimeGetComponent extends SearchComponent
         }
 
         // SolrCore.verbose("RealTimeGet using searcher ", searcher);
-        SchemaField idField = core.getSchema().getUniqueKeyField();
+        SchemaField idField = core.getLatestSchema().getUniqueKeyField();
 
         int docid = searcher.getFirstMatch(new Term(idField.getName(), idBytes));
         if (docid < 0) return null;
         Document luceneDocument = searcher.doc(docid);
-        sid = toSolrInputDocument(luceneDocument, core.getSchema());
+        sid = toSolrInputDocument(luceneDocument, core.getLatestSchema());
       }
     } finally {
       if (searcherHolder != null) {
@@ -287,7 +324,7 @@ public class RealTimeGetComponent extends SearchComponent
         if (sf != null && schema.isCopyFieldTarget(sf)) continue;
 
         if (sf != null && sf.multiValued()) {
-          List<Object> vals = new ArrayList<Object>();
+          List<Object> vals = new ArrayList<>();
           vals.add( f );
           out.setField( f.name(), vals );
         }
@@ -310,7 +347,7 @@ public class RealTimeGetComponent extends SearchComponent
     Document out = new Document();
     for (IndexableField f : doc.getFields()) {
       if (f.fieldType().stored() ) {
-        out.add((IndexableField) f);
+        out.add(f);
       }
     }
 
@@ -336,7 +373,7 @@ public class RealTimeGetComponent extends SearchComponent
       return ResponseBuilder.STAGE_DONE;
     }
 
-    List<String> allIds = new ArrayList<String>();
+    List<String> allIds = new ArrayList<>();
     if (id1 != null) {
       for (String s : id1) {
         allIds.add(s);
@@ -361,13 +398,13 @@ public class RealTimeGetComponent extends SearchComponent
       DocCollection coll = clusterState.getCollection(collection);
 
 
-      Map<String, List<String>> sliceToId = new HashMap<String, List<String>>();
+      Map<String, List<String>> sliceToId = new HashMap<>();
       for (String id : allIds) {
-        Slice slice = coll.getRouter().getTargetSlice(id, null, params, coll);
+        Slice slice = coll.getRouter().getTargetSlice(id, null, null, params, coll);
 
         List<String> idsForShard = sliceToId.get(slice.getName());
         if (idsForShard == null) {
-          idsForShard = new ArrayList<String>(2);
+          idsForShard = new ArrayList<>(2);
           sliceToId.put(slice.getName(), idsForShard);
         }
         idsForShard.add(id);
@@ -475,11 +512,6 @@ public class RealTimeGetComponent extends SearchComponent
   }
 
   @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/component/RealTimeGetComponent.java $";
-  }
-
-  @Override
   public URL[] getDocs() {
     return null;
   }
@@ -522,6 +554,17 @@ public class RealTimeGetComponent extends SearchComponent
 
   
   public void processSync(ResponseBuilder rb, int nVersions, String sync) {
+    
+    boolean onlyIfActive = rb.req.getParams().getBool("onlyIfActive", false);
+    
+    if (onlyIfActive) {
+      if (rb.req.getCore().getCoreDescriptor().getCloudDescriptor().getLastPublished() != Replica.State.ACTIVE) {
+        log.info("Last published state was not ACTIVE, cannot sync.");
+        rb.rsp.add("sync", "false");
+        return;
+      }
+    }
+    
     List<String> replicas = StrUtils.splitSmart(sync, ",", true);
     
     boolean cantReachIsSuccess = rb.req.getParams().getBool("cantReachIsSuccess", false);
@@ -552,13 +595,13 @@ public class RealTimeGetComponent extends SearchComponent
 
     List<String> versions = StrUtils.splitSmart(versionsStr, ",", true);
 
-    // TODO: get this from cache instead of rebuilding?
-    UpdateLog.RecentUpdates recentUpdates = ulog.getRecentUpdates();
 
-    List<Object> updates = new ArrayList<Object>(versions.size());
+    List<Object> updates = new ArrayList<>(versions.size());
 
     long minVersion = Long.MAX_VALUE;
-    
+
+    // TODO: get this from cache instead of rebuilding?
+    UpdateLog.RecentUpdates recentUpdates = ulog.getRecentUpdates();
     try {
       for (String versionStr : versions) {
         long version = Long.parseLong(versionStr);
@@ -573,9 +616,7 @@ public class RealTimeGetComponent extends SearchComponent
           // TODO: do any kind of validation here?
           updates.add(o);
 
-        } catch (SolrException e) {
-          log.warn("Exception reading log for updates", e);
-        } catch (ClassCastException e) {
+        } catch (SolrException | ClassCastException e) {
           log.warn("Exception reading log for updates", e);
         }
       }

@@ -40,9 +40,4 @@ public class ScoreOrderFragmentsBuilder extends SolrFragmentsBuilder {
   public String getDescription() {
     return "ScoreOrderFragmentsBuilder";
   }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/highlight/ScoreOrderFragmentsBuilder.java $";
-  }
 }

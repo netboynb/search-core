@@ -16,14 +16,41 @@
  */
 package org.apache.solr.search;
 
-import org.apache.lucene.index.*;
-import org.apache.lucene.search.*;
+import java.io.Closeable;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.apache.lucene.index.Fields;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.MultiPostingsEnum;
+import org.apache.lucene.index.PostingsEnum;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.search.ComplexExplanation;
+import org.apache.lucene.search.DocIdSet;
+import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.search.Explanation;
+import org.apache.lucene.search.Filter;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.Scorer;
+import org.apache.lucene.search.Weight;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.OpenBitSet;
+import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.StringHelper;
+import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.cloud.Aliases;
+import org.apache.solr.common.cloud.Replica;
+import org.apache.solr.common.cloud.Slice;
+import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
@@ -36,16 +63,8 @@ import org.apache.solr.request.SolrRequestInfo;
 import org.apache.solr.schema.TrieField;
 import org.apache.solr.util.RefCounted;
 
-import java.io.Closeable;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Set;
-
-
 public class JoinQParserPlugin extends QParserPlugin {
-  public static String NAME = "join";
+  public static final String NAME = "join";
 
   @Override
   public void init(NamedList args) {
@@ -66,13 +85,45 @@ public class JoinQParserPlugin extends QParserPlugin {
         if (fromIndex != null && !fromIndex.equals(req.getCore().getCoreDescriptor().getName()) ) {
           CoreContainer container = req.getCore().getCoreDescriptor().getCoreContainer();
 
-          final SolrCore fromCore = container.getCore(fromIndex);
-          RefCounted<SolrIndexSearcher> fromHolder = null;
+          // if in SolrCloud mode, fromIndex should be the name of a single-sharded collection
+          if (container.isZooKeeperAware()) {
+            ZkController zkController = container.getZkController();
+            if (!zkController.getClusterState().hasCollection(fromIndex)) {
+              // collection not found ... but it might be an alias?
+              String resolved = null;
+              Aliases aliases = zkController.getZkStateReader().getAliases();
+              if (aliases != null) {
+                Map<String, String> collectionAliases = aliases.getCollectionAliasMap();
+                resolved = (collectionAliases != null) ? collectionAliases.get(fromIndex) : null;
+                if (resolved != null) {
+                  // ok, was an alias, but if the alias points to multiple collections, then we don't support that yet
+                  if (resolved.split(",").length > 1)
+                    throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+                        "SolrCloud join: Collection alias '" + fromIndex +
+                            "' maps to multiple collections ("+resolved+
+                            "), which is not currently supported for joins.");
+                }
+              }
 
-          if (fromCore == null) {
-            throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Cross-core join: no such core " + fromIndex);
+              if (resolved == null)
+                throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+                  "SolrCloud join: Collection '" + fromIndex + "' not found!");
+
+              // ok, resolved to an alias
+              fromIndex = resolved;
+            }
+
+            // the fromIndex is a local replica for a single-sharded collection with replicas
+            // across all nodes that have replicas for the collection we're joining with
+            fromIndex = findLocalReplicaForFromIndex(zkController, fromIndex);
           }
 
+          final SolrCore fromCore = container.getCore(fromIndex);
+          if (fromCore == null)
+            throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+                "Cross-core join: no such core " + fromIndex);
+
+          RefCounted<SolrIndexSearcher> fromHolder = null;
           LocalSolrQueryRequest otherReq = new LocalSolrQueryRequest(fromCore, params);
           try {
             QParser parser = QParser.getParser(v, "lucene", otherReq);
@@ -94,6 +145,38 @@ public class JoinQParserPlugin extends QParserPlugin {
         return jq;
       }
     };
+  }
+
+  protected String findLocalReplicaForFromIndex(ZkController zkController, String fromIndex) {
+    String fromReplica = null;
+
+    String nodeName = zkController.getNodeName();
+    for (Slice slice : zkController.getClusterState().getActiveSlices(fromIndex)) {
+      if (fromReplica != null)
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+            "SolrCloud join: multiple shards not yet supported " + fromIndex);
+
+      for (Replica replica : slice.getReplicas()) {
+        if (replica.getNodeName().equals(nodeName)) {
+          fromReplica = replica.getStr(ZkStateReader.CORE_NAME_PROP);
+
+          // found local replica, but is it Active?
+          if (replica.getState() != Replica.State.ACTIVE)
+            throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+                "SolrCloud join: "+fromIndex+" has a local replica ("+fromReplica+
+                    ") on "+nodeName+", but it is "+replica.getState());
+
+          break;
+        }
+      }
+    }
+
+    if (fromReplica == null)
+      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+          "SolrCloud join: No active replicas for "+fromIndex+
+              " found in node " + nodeName);
+
+    return fromReplica;
   }
 }
 
@@ -121,11 +204,7 @@ class JoinQuery extends Query {
   }
 
   @Override
-  public void extractTerms(Set terms) {
-  }
-
-  @Override
-  public Weight createWeight(IndexSearcher searcher) throws IOException {
+  public Weight createWeight(IndexSearcher searcher, boolean needsScores) throws IOException {
     return new JoinQueryWeight((SolrIndexSearcher)searcher);
   }
 
@@ -139,6 +218,7 @@ class JoinQuery extends Query {
     ResponseBuilder rb;
 
     public JoinQueryWeight(SolrIndexSearcher searcher) {
+      super(JoinQuery.this);
       this.fromSearcher = searcher;
       SolrRequestInfo info = SolrRequestInfo.getRequestInfo();
       if (info != null) {
@@ -196,9 +276,7 @@ class JoinQuery extends Query {
     }
 
     @Override
-    public Query getQuery() {
-      return JoinQuery.this;
-    }
+    public void extractTerms(Set<org.apache.lucene.index.Term> terms) {}
 
     @Override
     public float getValueForNormalization() throws IOException {
@@ -218,8 +296,7 @@ class JoinQuery extends Query {
 
 
     @Override
-    public Scorer scorer(AtomicReaderContext context, boolean scoreDocsInOrder,
-        boolean topScorer, Bits acceptDocs) throws IOException {
+    public Scorer scorer(LeafReaderContext context, Bits acceptDocs) throws IOException {
       if (filter == null) {
         boolean debug = rb != null && rb.isDebug();
         long start = debug ? System.currentTimeMillis() : 0;
@@ -227,7 +304,7 @@ class JoinQuery extends Query {
         long end = debug ? System.currentTimeMillis() : 0;
 
         if (debug) {
-          SimpleOrderedMap<Object> dbg = new SimpleOrderedMap<Object>();
+          SimpleOrderedMap<Object> dbg = new SimpleOrderedMap<>();
           dbg.add("time", (end-start));
           dbg.add("fromSetSize", fromSetSize);  // the input
           dbg.add("toSetSize", resultSet.size());    // the output
@@ -252,8 +329,7 @@ class JoinQuery extends Query {
 
       // Although this set only includes live docs, other filters can be pushed down to queries.
       DocIdSet readerSet = filter.getDocIdSet(context, acceptDocs);
-      if (readerSet == null) readerSet=DocIdSet.EMPTY_DOCIDSET;
-      return new JoinScorer(this, readerSet.iterator(), getBoost());
+      return new JoinScorer(this, readerSet == null ? DocIdSetIterator.empty() : readerSet.iterator(), getBoost());
     }
 
 
@@ -271,7 +347,7 @@ class JoinQuery extends Query {
 
 
     public DocSet getDocSet() throws IOException {
-      OpenBitSet resultBits = null;
+      FixedBitSet resultBits = null;
 
       // minimum docFreq to use the cache
       int minDocFreqFrom = Math.max(5, fromSearcher.maxDoc() >> 13);
@@ -283,7 +359,7 @@ class JoinQuery extends Query {
       DocSet fromSet = fromSearcher.getDocSet(q);
       fromSetSize = fromSet.size();
 
-      List<DocSet> resultList = new ArrayList<DocSet>(10);
+      List<DocSet> resultList = new ArrayList<>(10);
 
       // make sure we have a set that is fast for random access, if we will use it for that
       DocSet fastForRandomSet = fromSet;
@@ -292,8 +368,8 @@ class JoinQuery extends Query {
         fastForRandomSet = new HashDocSet(sset.getDocs(), 0, sset.size());
       }
 
-      Fields fromFields = fromSearcher.getAtomicReader().fields();
-      Fields toFields = fromSearcher==toSearcher ? fromFields : toSearcher.getAtomicReader().fields();
+      Fields fromFields = fromSearcher.getLeafReader().fields();
+      Fields toFields = fromSearcher==toSearcher ? fromFields : toSearcher.getLeafReader().fields();
       if (fromFields == null) return DocSet.EMPTY;
       Terms terms = fromFields.terms(fromField);
       Terms toTerms = toFields.terms(toField);
@@ -302,34 +378,34 @@ class JoinQuery extends Query {
       BytesRef prefix = prefixStr == null ? null : new BytesRef(prefixStr);
 
       BytesRef term = null;
-      TermsEnum  termsEnum = terms.iterator(null);
-      TermsEnum  toTermsEnum = toTerms.iterator(null);
+      TermsEnum  termsEnum = terms.iterator();
+      TermsEnum  toTermsEnum = toTerms.iterator();
       SolrIndexSearcher.DocsEnumState fromDeState = null;
       SolrIndexSearcher.DocsEnumState toDeState = null;
 
       if (prefix == null) {
         term = termsEnum.next();
       } else {
-        if (termsEnum.seekCeil(prefix, true) != TermsEnum.SeekStatus.END) {
+        if (termsEnum.seekCeil(prefix) != TermsEnum.SeekStatus.END) {
           term = termsEnum.term();
         }
       }
 
-      Bits fromLiveDocs = fromSearcher.getAtomicReader().getLiveDocs();
-      Bits toLiveDocs = fromSearcher == toSearcher ? fromLiveDocs : toSearcher.getAtomicReader().getLiveDocs();
+      Bits fromLiveDocs = fromSearcher.getLeafReader().getLiveDocs();
+      Bits toLiveDocs = fromSearcher == toSearcher ? fromLiveDocs : toSearcher.getLeafReader().getLiveDocs();
 
       fromDeState = new SolrIndexSearcher.DocsEnumState();
       fromDeState.fieldName = fromField;
       fromDeState.liveDocs = fromLiveDocs;
       fromDeState.termsEnum = termsEnum;
-      fromDeState.docsEnum = null;
+      fromDeState.postingsEnum = null;
       fromDeState.minSetSizeCached = minDocFreqFrom;
 
       toDeState = new SolrIndexSearcher.DocsEnumState();
       toDeState.fieldName = toField;
       toDeState.liveDocs = toLiveDocs;
       toDeState.termsEnum = toTermsEnum;
-      toDeState.docsEnum = null;
+      toDeState.postingsEnum = null;
       toDeState.minSetSizeCached = minDocFreqTo;
 
       while (term != null) {
@@ -345,18 +421,18 @@ class JoinQuery extends Query {
         if (freq < minDocFreqFrom) {
           fromTermDirectCount++;
           // OK to skip liveDocs, since we check for intersection with docs matching query
-          fromDeState.docsEnum = fromDeState.termsEnum.docs(null, fromDeState.docsEnum, DocsEnum.FLAG_NONE);
-          DocsEnum docsEnum = fromDeState.docsEnum;
+          fromDeState.postingsEnum = fromDeState.termsEnum.postings(null, fromDeState.postingsEnum, PostingsEnum.NONE);
+          PostingsEnum postingsEnum = fromDeState.postingsEnum;
 
-          if (docsEnum instanceof MultiDocsEnum) {
-            MultiDocsEnum.EnumWithSlice[] subs = ((MultiDocsEnum)docsEnum).getSubs();
-            int numSubs = ((MultiDocsEnum)docsEnum).getNumSubs();
+          if (postingsEnum instanceof MultiPostingsEnum) {
+            MultiPostingsEnum.EnumWithSlice[] subs = ((MultiPostingsEnum) postingsEnum).getSubs();
+            int numSubs = ((MultiPostingsEnum) postingsEnum).getNumSubs();
             outer: for (int subindex = 0; subindex<numSubs; subindex++) {
-              MultiDocsEnum.EnumWithSlice sub = subs[subindex];
-              if (sub.docsEnum == null) continue;
+              MultiPostingsEnum.EnumWithSlice sub = subs[subindex];
+              if (sub.postingsEnum == null) continue;
               int base = sub.slice.start;
               int docid;
-              while ((docid = sub.docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+              while ((docid = sub.postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                 if (fastForRandomSet.exists(docid+base)) {
                   intersects = true;
                   break outer;
@@ -365,7 +441,7 @@ class JoinQuery extends Query {
             }
           } else {
             int docid;
-            while ((docid = docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+            while ((docid = postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
               if (fastForRandomSet.exists(docid)) {
                 intersects = true;
                 break;
@@ -388,7 +464,7 @@ class JoinQuery extends Query {
             int df = toTermsEnum.docFreq();
             toTermHitsTotalDf += df;
             if (resultBits==null && df + resultListDocs > maxSortedIntSize && resultList.size() > 0) {
-              resultBits = new OpenBitSet(toSearcher.maxDoc());
+              resultBits = new FixedBitSet(toSearcher.maxDoc());
             }
 
             // if we don't have a bitset yet, or if the resulting set will be too large
@@ -398,10 +474,10 @@ class JoinQuery extends Query {
               DocSet toTermSet = toSearcher.getDocSet(toDeState);
               resultListDocs += toTermSet.size();
               if (resultBits != null) {
-                toTermSet.setBitsOn(resultBits);
+                toTermSet.addAllTo(new BitDocSet(resultBits));
               } else {
                 if (toTermSet instanceof BitDocSet) {
-                  resultBits = (OpenBitSet)((BitDocSet)toTermSet).bits.clone();
+                  resultBits = ((BitDocSet)toTermSet).bits.clone();
                 } else {
                   resultList.add(toTermSet);
                 }
@@ -410,27 +486,27 @@ class JoinQuery extends Query {
               toTermDirectCount++;
 
               // need to use liveDocs here so we don't map to any deleted ones
-              toDeState.docsEnum = toDeState.termsEnum.docs(toDeState.liveDocs, toDeState.docsEnum, DocsEnum.FLAG_NONE);
-              DocsEnum docsEnum = toDeState.docsEnum;              
+              toDeState.postingsEnum = toDeState.termsEnum.postings(toDeState.liveDocs, toDeState.postingsEnum, PostingsEnum.NONE);
+              PostingsEnum postingsEnum = toDeState.postingsEnum;
 
-              if (docsEnum instanceof MultiDocsEnum) {
-                MultiDocsEnum.EnumWithSlice[] subs = ((MultiDocsEnum)docsEnum).getSubs();
-                int numSubs = ((MultiDocsEnum)docsEnum).getNumSubs();
+              if (postingsEnum instanceof MultiPostingsEnum) {
+                MultiPostingsEnum.EnumWithSlice[] subs = ((MultiPostingsEnum) postingsEnum).getSubs();
+                int numSubs = ((MultiPostingsEnum) postingsEnum).getNumSubs();
                 for (int subindex = 0; subindex<numSubs; subindex++) {
-                  MultiDocsEnum.EnumWithSlice sub = subs[subindex];
-                  if (sub.docsEnum == null) continue;
+                  MultiPostingsEnum.EnumWithSlice sub = subs[subindex];
+                  if (sub.postingsEnum == null) continue;
                   int base = sub.slice.start;
                   int docid;
-                  while ((docid = sub.docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                  while ((docid = sub.postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                     resultListDocs++;
-                    resultBits.fastSet(docid + base);
+                    resultBits.set(docid + base);
                   }
                 }
               } else {
                 int docid;
-                while ((docid = docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                while ((docid = postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                   resultListDocs++;
-                  resultBits.fastSet(docid);
+                  resultBits.set(docid);
                 }
               }
             }
@@ -444,10 +520,11 @@ class JoinQuery extends Query {
       smallSetsDeferred = resultList.size();
 
       if (resultBits != null) {
+        BitDocSet bitSet = new BitDocSet(resultBits);
         for (DocSet set : resultList) {
-          set.setBitsOn(resultBits);
+          set.addAllTo(bitSet);
         }
-        return new BitDocSet(resultBits);
+        return bitSet;
       }
 
       if (resultList.size()==0) {
@@ -487,8 +564,8 @@ class JoinQuery extends Query {
     }
 
     @Override
-    public Explanation explain(AtomicReaderContext context, int doc) throws IOException {
-      Scorer scorer = scorer(context, true, false, context.reader().getLiveDocs());
+    public Explanation explain(LeafReaderContext context, int doc) throws IOException {
+      Scorer scorer = scorer(context, context.reader().getLiveDocs());
       boolean exists = scorer.advance(doc) == doc;
 
       ComplexExplanation result = new ComplexExplanation();
@@ -519,7 +596,7 @@ class JoinQuery extends Query {
     public JoinScorer(Weight w, DocIdSetIterator iter, float score) throws IOException {
       super(w);
       this.score = score;
-      this.iter = iter==null ? DocIdSet.EMPTY_DOCIDSET.iterator() : iter;
+      this.iter = iter==null ? DocIdSetIterator.empty() : iter;
     }
 
     @Override
@@ -545,6 +622,11 @@ class JoinQuery extends Query {
     @Override
     public int advance(int target) throws IOException {
       return iter.advance(target);
+    }
+
+    @Override
+    public long cost() {
+      return iter.cost();
     }
   }
 

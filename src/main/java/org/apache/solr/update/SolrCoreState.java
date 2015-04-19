@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.util.concurrent.locks.Lock;
 
 import org.apache.lucene.index.IndexWriter;
+import org.apache.solr.cloud.ActionThrottle;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.CoreDescriptor;
 import org.apache.solr.core.DirectoryFactory;
@@ -70,8 +71,8 @@ public abstract class SolrCoreState {
       try {
         log.info("Closing SolrCoreState");
         close(closer);
-      } catch (Throwable t) {
-        log.error("Error closing SolrCoreState", t);
+      } catch (Exception e) {
+        log.error("Error closing SolrCoreState", e);
       }
     }
     return close;
@@ -86,7 +87,27 @@ public abstract class SolrCoreState {
    * @param rollback close IndexWriter if false, else rollback
    * @throws IOException If there is a low-level I/O error.
    */
-  public abstract void newIndexWriter(SolrCore core, boolean rollback, boolean forceNewDir) throws IOException;
+  public abstract void newIndexWriter(SolrCore core, boolean rollback) throws IOException;
+  
+  
+  /**
+   * Expert method that closes the IndexWriter - you must call {@link #openIndexWriter(SolrCore)}
+   * in a finally block after calling this method.
+   * 
+   * @param core that the IW belongs to
+   * @param rollback true if IW should rollback rather than close
+   * @throws IOException If there is a low-level I/O error.
+   */
+  public abstract void closeIndexWriter(SolrCore core, boolean rollback) throws IOException;
+  
+  /**
+   * Expert method that opens the IndexWriter - you must call {@link #closeIndexWriter(SolrCore, boolean)}
+   * first, and then call this method in a finally block.
+   * 
+   * @param core that the IW belongs to
+   * @throws IOException If there is a low-level I/O error.
+   */
+  public abstract void openIndexWriter(SolrCore core) throws IOException;
   
   /**
    * Get the current IndexWriter. If a new IndexWriter must be created, use the
@@ -120,4 +141,12 @@ public abstract class SolrCoreState {
 
   public abstract void close(IndexWriterCloser closer);
 
+  /**
+   * @return throttle to limit how fast a core attempts to become leader
+   */
+  public abstract ActionThrottle getLeaderThrottle();
+
+  public abstract boolean getLastReplicateIndexSuccess();
+
+  public abstract void setLastReplicateIndexSuccess(boolean success);
 }

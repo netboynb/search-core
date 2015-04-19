@@ -74,9 +74,4 @@ public class BreakIteratorBoundaryScanner extends SolrBoundaryScanner {
   public String getDescription() {
     return "BreakIteratorBoundaryScanner";
   }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/highlight/BreakIteratorBoundaryScanner.java $";
-  }
 }

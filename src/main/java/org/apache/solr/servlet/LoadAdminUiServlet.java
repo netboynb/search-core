@@ -17,27 +17,26 @@
 
 package org.apache.solr.servlet;
 
-import java.io.InputStream;
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
-
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.StringEscapeUtils;
+import org.apache.commons.lang.StringUtils;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.SolrCore;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 
 /**
  * A simple servlet to load the Solr Admin UI
  * 
  * @since solr 4.0
  */
-public final class LoadAdminUiServlet extends HttpServlet {
+public final class LoadAdminUiServlet extends BaseSolrServlet {
 
   @Override
   public void doGet(HttpServletRequest request,
@@ -51,7 +50,7 @@ public final class LoadAdminUiServlet extends HttpServlet {
       try {
         response.setCharacterEncoding("UTF-8");
         response.setContentType("text/html");
-        Writer out = new OutputStreamWriter(response.getOutputStream(), "UTF-8");
+        Writer out = new OutputStreamWriter(response.getOutputStream(), StandardCharsets.UTF_8);
 
         String html = IOUtils.toString(in, "UTF-8");
         Package pack = SolrCore.class.getPackage();
@@ -63,7 +62,7 @@ public final class LoadAdminUiServlet extends HttpServlet {
         };
         String[] replace = new String[] {
             StringEscapeUtils.escapeJavaScript(request.getContextPath()),
-            StringEscapeUtils.escapeJavaScript(cores.getAdminPath()),
+            StringEscapeUtils.escapeJavaScript(CoreContainer.CORES_HANDLER_PATH),
             StringEscapeUtils.escapeJavaScript(pack.getSpecificationVersion())
         };
         

@@ -17,28 +17,37 @@
 
 package org.apache.solr.schema;
 
-import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.analysis.core.KeywordAnalyzer;
-import org.apache.lucene.analysis.core.KeywordTokenizerFactory;
-import org.apache.lucene.analysis.util.*;
-import org.apache.lucene.util.Version;
-import org.apache.solr.analysis.TokenizerChain;
-import org.apache.solr.common.SolrException;
-import org.apache.solr.util.DOMUtil;
-import org.apache.solr.core.Config;
-import org.apache.solr.core.SolrResourceLoader;
-import org.apache.solr.util.plugin.AbstractPluginLoader;
-import org.w3c.dom.*;
-
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
-import java.util.*;
-import java.lang.reflect.Constructor;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
 
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.core.KeywordAnalyzer;
+import org.apache.lucene.analysis.core.KeywordTokenizerFactory;
+import org.apache.lucene.analysis.util.AbstractAnalysisFactory;
+import org.apache.lucene.analysis.util.CharFilterFactory;
+import org.apache.lucene.analysis.util.MultiTermAwareComponent;
+import org.apache.lucene.analysis.util.TokenFilterFactory;
+import org.apache.lucene.analysis.util.TokenizerFactory;
+import org.apache.lucene.util.Version;
+import org.apache.solr.analysis.TokenizerChain;
+import org.apache.solr.common.SolrException;
+import org.apache.solr.core.Config;
+import org.apache.solr.core.SolrResourceLoader;
+import org.apache.solr.util.DOMUtil;
+import org.apache.solr.util.plugin.AbstractPluginLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+import static org.apache.solr.common.params.CommonParams.NAME;
 
 public final class FieldTypePluginLoader 
   extends AbstractPluginLoader<FieldType> {
@@ -116,7 +125,7 @@ public final class FieldTypePluginLoader
     }
 
     if (null != analyzer) {
-      ft.setAnalyzer(analyzer);
+      ft.setIndexAnalyzer(analyzer);
       ft.setQueryAnalyzer(queryAnalyzer);
       if (ft instanceof TextField) {
         if (null == multiAnalyzer) {
@@ -137,11 +146,10 @@ public final class FieldTypePluginLoader
   @Override
   protected void init(FieldType plugin, Node node) throws Exception {
 
-    Map<String,String> params = DOMUtil.toMapExcept( node.getAttributes(), 
-                                                     "name","class" );
-    plugin.setArgs(schema, params );
+    Map<String, String> params = DOMUtil.toMapExcept(node.getAttributes(), NAME);
+    plugin.setArgs(schema, params);
   }
-  
+
   @Override
   protected FieldType register(String name, 
                                FieldType plugin) throws Exception {
@@ -183,15 +191,10 @@ public final class FieldTypePluginLoader
   }
 
   private static class MultiTermChainBuilder {
-    static final KeywordTokenizerFactory keyFactory;
-
-    static {
-      keyFactory = new KeywordTokenizerFactory();
-      keyFactory.init(new HashMap<String,String>());
-    }
+    static final KeywordTokenizerFactory keyFactory = new KeywordTokenizerFactory(new HashMap<String,String>());
 
     ArrayList<CharFilterFactory> charFilters = null;
-    ArrayList<TokenFilterFactory> filters = new ArrayList<TokenFilterFactory>(2);
+    ArrayList<TokenFilterFactory> filters = new ArrayList<>(2);
     TokenizerFactory tokenizer = keyFactory;
 
     public void add(Object current) {
@@ -199,14 +202,14 @@ public final class FieldTypePluginLoader
       AbstractAnalysisFactory newComponent = ((MultiTermAwareComponent)current).getMultiTermComponent();
       if (newComponent instanceof TokenFilterFactory) {
         if (filters == null) {
-          filters = new ArrayList<TokenFilterFactory>(2);
+          filters = new ArrayList<>(2);
         }
         filters.add((TokenFilterFactory)newComponent);
       } else if (newComponent instanceof TokenizerFactory) {
         tokenizer = (TokenizerFactory)newComponent;
       } else if (newComponent instanceof CharFilterFactory) {
         if (charFilters == null) {
-          charFilters = new ArrayList<CharFilterFactory>(1);
+          charFilters = new ArrayList<>(1);
         }
         charFilters.add( (CharFilterFactory)newComponent);
 
@@ -267,28 +270,20 @@ public final class FieldTypePluginLoader
       try {
         // No need to be core-aware as Analyzers are not in the core-aware list
         final Class<? extends Analyzer> clazz = loader.findClass(analyzerName, Analyzer.class);
-        
-        try {
-          // first try to use a ctor with version parameter 
-          // (needed for many new Analyzers that have no default one anymore)
-          Constructor<? extends Analyzer> cnstr 
-            = clazz.getConstructor(Version.class);
-          final String matchVersionStr 
-            = DOMUtil.getAttr(attrs, LUCENE_MATCH_VERSION_PARAM);
-          final Version luceneMatchVersion = (matchVersionStr == null) ?
-            schema.getDefaultLuceneMatchVersion() : 
-            Config.parseLuceneVersionString(matchVersionStr);
-          if (luceneMatchVersion == null) {
-            throw new SolrException
-              ( SolrException.ErrorCode.SERVER_ERROR,
-                "Configuration Error: Analyzer '" + clazz.getName() +
-                "' needs a 'luceneMatchVersion' parameter");
-          }
-          return cnstr.newInstance(luceneMatchVersion);
-        } catch (NoSuchMethodException nsme) {
-          // otherwise use default ctor
-          return clazz.newInstance();
+        Analyzer analyzer = clazz.newInstance();
+
+        final String matchVersionStr = DOMUtil.getAttr(attrs, LUCENE_MATCH_VERSION_PARAM);
+        final Version luceneMatchVersion = (matchVersionStr == null) ?
+          schema.getDefaultLuceneMatchVersion() :
+          Config.parseLuceneVersionString(matchVersionStr);
+        if (luceneMatchVersion == null) {
+          throw new SolrException
+            ( SolrException.ErrorCode.SERVER_ERROR,
+              "Configuration Error: Analyzer '" + clazz.getName() +
+              "' needs a 'luceneMatchVersion' parameter");
         }
+        analyzer.setVersion(luceneMatchVersion);
+        return analyzer;
       } catch (Exception e) {
         log.error("Cannot load analyzer: "+analyzerName, e);
         throw new SolrException( SolrException.ErrorCode.SERVER_ERROR,
@@ -299,20 +294,24 @@ public final class FieldTypePluginLoader
     // Load the CharFilters
 
     final ArrayList<CharFilterFactory> charFilters 
-      = new ArrayList<CharFilterFactory>();
+      = new ArrayList<>();
     AbstractPluginLoader<CharFilterFactory> charFilterLoader =
       new AbstractPluginLoader<CharFilterFactory>
       ("[schema.xml] analyzer/charFilter", CharFilterFactory.class, false, false) {
 
       @Override
+      protected CharFilterFactory create(SolrResourceLoader loader, String name, String className, Node node) throws Exception {
+        final Map<String,String> params = DOMUtil.toMap(node.getAttributes());
+        String configuredVersion = params.remove(LUCENE_MATCH_VERSION_PARAM);
+        params.put(LUCENE_MATCH_VERSION_PARAM, parseConfiguredVersion(configuredVersion, CharFilterFactory.class.getSimpleName()).toString());
+        CharFilterFactory factory = loader.newInstance(className, CharFilterFactory.class, getDefaultPackages(), new Class[] { Map.class }, new Object[] { params });
+        factory.setExplicitLuceneMatchVersion(null != configuredVersion);
+        return factory;
+      }
+
+      @Override
       protected void init(CharFilterFactory plugin, Node node) throws Exception {
         if( plugin != null ) {
-          final Map<String,String> params = DOMUtil.toMapExcept(node.getAttributes(),"class");
-
-          String configuredVersion = params.remove(LUCENE_MATCH_VERSION_PARAM);
-          plugin.setLuceneMatchVersion(parseConfiguredVersion(configuredVersion, plugin.getClass().getSimpleName()));
-
-          plugin.init( params );
           charFilters.add( plugin );
         }
       }
@@ -331,22 +330,27 @@ public final class FieldTypePluginLoader
     // the configuration is ok
 
     final ArrayList<TokenizerFactory> tokenizers 
-      = new ArrayList<TokenizerFactory>(1);
+      = new ArrayList<>(1);
     AbstractPluginLoader<TokenizerFactory> tokenizerLoader =
       new AbstractPluginLoader<TokenizerFactory>
       ("[schema.xml] analyzer/tokenizer", TokenizerFactory.class, false, false) {
+      
+      @Override
+      protected TokenizerFactory create(SolrResourceLoader loader, String name, String className, Node node) throws Exception {
+        final Map<String,String> params = DOMUtil.toMap(node.getAttributes());
+        String configuredVersion = params.remove(LUCENE_MATCH_VERSION_PARAM);
+        params.put(LUCENE_MATCH_VERSION_PARAM, parseConfiguredVersion(configuredVersion, TokenizerFactory.class.getSimpleName()).toString());
+        TokenizerFactory factory = loader.newInstance(className, TokenizerFactory.class, getDefaultPackages(), new Class[] { Map.class }, new Object[] { params });
+        factory.setExplicitLuceneMatchVersion(null != configuredVersion);
+        return factory;
+      }
+      
       @Override
       protected void init(TokenizerFactory plugin, Node node) throws Exception {
         if( !tokenizers.isEmpty() ) {
           throw new SolrException( SolrException.ErrorCode.SERVER_ERROR,
               "The schema defines multiple tokenizers for: "+node );
         }
-        final Map<String,String> params = DOMUtil.toMapExcept(node.getAttributes(),"class");
-
-        String configuredVersion = params.remove(LUCENE_MATCH_VERSION_PARAM);
-        plugin.setLuceneMatchVersion(parseConfiguredVersion(configuredVersion, plugin.getClass().getSimpleName()));
-
-        plugin.init( params );
         tokenizers.add( plugin );
       }
 
@@ -366,20 +370,25 @@ public final class FieldTypePluginLoader
     // Load the Filters
 
     final ArrayList<TokenFilterFactory> filters 
-      = new ArrayList<TokenFilterFactory>();
+      = new ArrayList<>();
 
     AbstractPluginLoader<TokenFilterFactory> filterLoader = 
       new AbstractPluginLoader<TokenFilterFactory>("[schema.xml] analyzer/filter", TokenFilterFactory.class, false, false)
     {
       @Override
+      protected TokenFilterFactory create(SolrResourceLoader loader, String name, String className, Node node) throws Exception {
+        final Map<String,String> params = DOMUtil.toMap(node.getAttributes());
+        String configuredVersion = params.remove(LUCENE_MATCH_VERSION_PARAM);
+        params.put(LUCENE_MATCH_VERSION_PARAM, parseConfiguredVersion(configuredVersion, TokenFilterFactory.class.getSimpleName()).toString());
+        TokenFilterFactory factory = loader.newInstance
+            (className, TokenFilterFactory.class, getDefaultPackages(), new Class[] { Map.class }, new Object[] { params });
+        factory.setExplicitLuceneMatchVersion(null != configuredVersion);
+        return factory;
+      }
+      
+      @Override
       protected void init(TokenFilterFactory plugin, Node node) throws Exception {
         if( plugin != null ) {
-          final Map<String,String> params = DOMUtil.toMapExcept(node.getAttributes(),"class");
-
-          String configuredVersion = params.remove(LUCENE_MATCH_VERSION_PARAM);
-          plugin.setLuceneMatchVersion(parseConfiguredVersion(configuredVersion, plugin.getClass().getSimpleName()));
-
-          plugin.init( params );
           filters.add( plugin );
         }
       }
@@ -399,7 +408,7 @@ public final class FieldTypePluginLoader
     Version version = (configuredVersion != null) ?
             Config.parseLuceneVersionString(configuredVersion) : schema.getDefaultLuceneMatchVersion();
 
-    if (!version.onOrAfter(Version.LUCENE_40)) {
+    if (!version.onOrAfter(Version.LUCENE_4_0_0_ALPHA)) {
       log.warn(pluginClassName + " is using deprecated " + version +
         " emulation. You should at some point declare and reindex to at least 4.0, because " +
         "3.x emulation is deprecated and will be removed in 5.0");

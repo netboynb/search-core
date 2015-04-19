@@ -29,7 +29,6 @@ import java.net.URL;
  * in the solrconfig as defaults, and may be overriden as request parameters.
  * (TODO: complete documentation of request parameters here, rather than only
  * on the wiki).
- * </p>
  *
  * <ul>
  * <li> highlight - Set to any value not .equal() to "false" to enable highlight
@@ -48,11 +47,6 @@ public class StandardRequestHandler extends SearchHandler
   @Override
   public String getDescription() {
     return "The standard Solr request handler";
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/StandardRequestHandler.java $";
   }
 
   @Override

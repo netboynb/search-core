@@ -17,25 +17,26 @@ package org.apache.solr.handler.component;
  */
 
 import java.net.ConnectException;
+import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionService;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.http.client.HttpClient;
+import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.SolrResponse;
-import org.apache.solr.client.solrj.SolrServer;
-import org.apache.solr.client.solrj.impl.HttpSolrServer;
-import org.apache.solr.client.solrj.impl.LBHttpSolrServer;
+import org.apache.solr.client.solrj.impl.HttpSolrClient;
+import org.apache.solr.client.solrj.impl.LBHttpSolrClient;
 import org.apache.solr.client.solrj.request.QueryRequest;
 import org.apache.solr.client.solrj.util.ClientUtils;
 import org.apache.solr.cloud.CloudDescriptor;
@@ -46,8 +47,6 @@ import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.common.cloud.ZkCoreNodeProps;
-import org.apache.solr.common.cloud.ZkNodeProps;
-import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.ShardParams;
@@ -55,34 +54,42 @@ import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.StrUtils;
 import org.apache.solr.core.CoreDescriptor;
+import org.apache.solr.core.SolrCore;
 import org.apache.solr.request.SolrQueryRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Strings;
+import org.slf4j.MDC;
 
 public class HttpShardHandler extends ShardHandler {
 
   private HttpShardHandlerFactory httpShardHandlerFactory;
   private CompletionService<ShardResponse> completionService;
-  private     Set<Future<ShardResponse>> pending;
+  private Set<Future<ShardResponse>> pending;
   private Map<String,List<String>> shardToURLs;
   private HttpClient httpClient;
 
-
+  protected static Logger log = LoggerFactory.getLogger(HttpShardHandler.class);
 
   public HttpShardHandler(HttpShardHandlerFactory httpShardHandlerFactory, HttpClient httpClient) {
     this.httpClient = httpClient;
     this.httpShardHandlerFactory = httpShardHandlerFactory;
-    completionService = new ExecutorCompletionService<ShardResponse>(httpShardHandlerFactory.commExecutor);
-    pending = new HashSet<Future<ShardResponse>>();
+    completionService = httpShardHandlerFactory.newCompletionService();
+    pending = new HashSet<>();
 
     // maps "localhost:8983|localhost:7574" to a shuffled List("http://localhost:8983","http://localhost:7574")
-      // This is primarily to keep track of what order we should use to query the replicas of a shard
-      // so that we use the same replica for all phases of a distributed request.
-    shardToURLs = new HashMap<String,List<String>>();
+    // This is primarily to keep track of what order we should use to query the replicas of a shard
+    // so that we use the same replica for all phases of a distributed request.
+    shardToURLs = new HashMap<>();
 
   }
 
 
   private static class SimpleSolrResponse extends SolrResponse {
+
     long elapsedTime;
+
     NamedList<Object> nl;
 
     @Override
@@ -99,38 +106,79 @@ public class HttpShardHandler extends ShardHandler {
     public void setResponse(NamedList<Object> rsp) {
       nl = rsp;
     }
+
+    @Override
+    public void setElapsedTime(long elapsedTime) {
+      this.elapsedTime = elapsedTime;
+    }
   }
 
 
   // Not thread safe... don't use in Callable.
   // Don't modify the returned URL list.
-  private List<String> getURLs(String shard) {
+  private List<String> getURLs(ShardRequest sreq, String shard) {
     List<String> urls = shardToURLs.get(shard);
-    if (urls==null) {
-      urls = StrUtils.splitSmart(shard, "|", true);
-
-      // convert shard to URL
-      for (int i=0; i<urls.size(); i++) {
-        urls.set(i, httpShardHandlerFactory.scheme + urls.get(i));
-      }
-
-      //
-      // Shuffle the list instead of use round-robin by default.
-      // This prevents accidental synchronization where multiple shards could get in sync
-      // and query the same replica at the same time.
-      //
-      if (urls.size() > 1)
-        Collections.shuffle(urls, httpShardHandlerFactory.r);
+    if (urls == null) {
+      urls = httpShardHandlerFactory.makeURLList(shard);
+      preferCurrentHostForDistributedReq(sreq, urls);
       shardToURLs.put(shard, urls);
     }
     return urls;
   }
 
+  /**
+   * A distributed request is made via {@link LBHttpSolrClient} to the first live server in the URL list.
+   * This means it is just as likely to choose current host as any of the other hosts.
+   * This function makes sure that the cores of current host are always put first in the URL list.
+   * If all nodes prefer local-cores then a bad/heavily-loaded node will receive less requests from healthy nodes.
+   * This will help prevent a distributed deadlock or timeouts in all the healthy nodes due to one bad node.
+   */
+  private void preferCurrentHostForDistributedReq(final ShardRequest sreq, final List<String> urls) {
+    if (sreq == null || sreq.rb == null || sreq.rb.req == null || urls == null || urls.size() <= 1)
+      return;
+
+    SolrQueryRequest req = sreq.rb.req;
+
+    // determine if we should apply the local preference
+    if (!req.getOriginalParams().getBool(CommonParams.PREFER_LOCAL_SHARDS, false))
+      return;
+
+    // Get this node's base URL from ZK
+    SolrCore core = req.getCore();
+    ZkController zkController = (core != null) ? core.getCoreDescriptor().getCoreContainer().getZkController() : null;
+    String currentHostAddress = (zkController != null) ? zkController.getBaseUrl() : null;
+    if (currentHostAddress == null) {
+      log.debug("Couldn't determine current host address to prefer local shards " +
+                "because either core is null? {} or there is no ZkController? {}",
+                Boolean.valueOf(core == null), Boolean.valueOf(zkController == null));
+      return;
+    }
+
+    if (log.isDebugEnabled())
+      log.debug("Trying to prefer local shard on {} among the urls: {}",
+          currentHostAddress, Arrays.toString(urls.toArray()));
+
+    ListIterator<String> itr = urls.listIterator();
+    while (itr.hasNext()) {
+      String url = itr.next();
+      if (url.startsWith(currentHostAddress)) {
+        // move current URL to the fore-front
+        itr.remove();
+        urls.add(0, url);
+
+        if (log.isDebugEnabled())
+          log.debug("Applied local shard preference for urls: {}",
+              Arrays.toString(urls.toArray()));
+
+        break;
+      }
+    }
+  }
 
   @Override
   public void submit(final ShardRequest sreq, final String shard, final ModifiableSolrParams params) {
     // do this outside of the callable for thread safety reasons
-    final List<String> urls = getURLs(shard);
+    final List<String> urls = getURLs(sreq, shard);
 
     Callable<ShardResponse> task = new Callable<ShardResponse>() {
       @Override
@@ -144,15 +192,13 @@ public class HttpShardHandler extends ShardHandler {
         srsp.setShard(shard);
         SimpleSolrResponse ssr = new SimpleSolrResponse();
         srsp.setSolrResponse(ssr);
-        long startTime = System.currentTimeMillis();
+        long startTime = System.nanoTime();
 
         try {
           params.remove(CommonParams.WT); // use default (currently javabin)
           params.remove(CommonParams.VERSION);
 
-          // SolrRequest req = new QueryRequest(SolrRequest.METHOD.POST, "/select");
-          // use generic request to avoid extra processing of queries
-          QueryRequest req = new QueryRequest(params);
+          QueryRequest req = makeQueryRequest(sreq, params, shard);
           req.setMethod(SolrRequest.METHOD.POST);
 
           // no need to set the response parser as binary is the default
@@ -168,17 +214,18 @@ public class HttpShardHandler extends ShardHandler {
           if (urls.size() <= 1) {
             String url = urls.get(0);
             srsp.setShardAddress(url);
-            SolrServer server = new HttpSolrServer(url, httpClient);
-            ssr.nl = server.request(req);
+            try (SolrClient client = new HttpSolrClient(url, httpClient)) {
+              ssr.nl = client.request(req);
+            }
           } else {
-            LBHttpSolrServer.Rsp rsp = httpShardHandlerFactory.loadbalancer.request(new LBHttpSolrServer.Req(req, urls));
+            LBHttpSolrClient.Rsp rsp = httpShardHandlerFactory.makeLoadBalancedRequest(req, urls);
             ssr.nl = rsp.getResponse();
             srsp.setShardAddress(rsp.getServer());
           }
         }
         catch( ConnectException cex ) {
           srsp.setException(cex); //????
-        } catch (Throwable th) {
+        } catch (Exception th) {
           srsp.setException(th);
           if (th instanceof SolrException) {
             srsp.setResponseCode(((SolrException)th).code());
@@ -187,13 +234,41 @@ public class HttpShardHandler extends ShardHandler {
           }
         }
 
-        ssr.elapsedTime = System.currentTimeMillis() - startTime;
+        ssr.elapsedTime = TimeUnit.MILLISECONDS.convert(System.nanoTime() - startTime, TimeUnit.NANOSECONDS);
 
-        return srsp;
+        return transfomResponse(sreq, srsp, shard);
       }
     };
 
-    pending.add( completionService.submit(task) );
+    try {
+      if (shard != null)  {
+        MDC.put("ShardRequest.shards", shard);
+      }
+      if (urls != null && !urls.isEmpty())  {
+        MDC.put("ShardRequest.urlList", urls.toString());
+      }
+      pending.add( completionService.submit(task) );
+    } finally {
+      MDC.remove("ShardRequest.shards");
+      MDC.remove("ShardRequest.urlList");
+    }
+  }
+  
+  /**
+   * Subclasses could modify the request based on the shard
+   */
+  protected QueryRequest makeQueryRequest(final ShardRequest sreq, ModifiableSolrParams params, String shard)
+  {
+    // use generic request to avoid extra processing of queries
+    return new QueryRequest(params);
+  }
+  
+  /**
+   * Subclasses could modify the Response based on the the shard
+   */
+  protected ShardResponse transfomResponse(final ShardRequest sreq, ShardResponse rsp, String shard)
+  {
+    return rsp;
   }
 
   /** returns a ShardResponse of the last response correlated with a ShardRequest.  This won't 
@@ -293,10 +368,10 @@ public class HttpShardHandler extends ShardHandler {
         // we weren't provided with an explicit list of slices to query via "shards", so use the cluster state
 
         clusterState =  zkController.getClusterState();
-        String shardKeys = params.get(ShardParams.SHARD_KEYS);
+        String shardKeys =  params.get(ShardParams._ROUTE_);
 
         // This will be the complete list of slices we need to query for this request.
-        slices = new HashMap<String,Slice>();
+        slices = new HashMap<>();
 
         // we need to find out what collections this request is for.
 
@@ -340,10 +415,9 @@ public class HttpShardHandler extends ShardHandler {
         // and make it a non-distributed request.
         String ourSlice = cloudDescriptor.getShardId();
         String ourCollection = cloudDescriptor.getCollectionName();
-        if (rb.slices.length == 1
+        if (rb.slices.length == 1 && rb.slices[0] != null
             && ( rb.slices[0].equals(ourSlice) || rb.slices[0].equals(ourCollection + "_" + ourSlice) )  // handle the <collection>_<slice> format
-            && ZkStateReader.ACTIVE.equals(cloudDescriptor.getLastPublished()) )
-        {
+            && cloudDescriptor.getLastPublished() == Replica.State.ACTIVE) {
           boolean shortCircuit = params.getBool("shortCircuit", true);       // currently just a debugging parameter to check distrib search on a single node
 
           String targetHandler = params.get(ShardParams.SHARDS_QT);
@@ -351,6 +425,7 @@ public class HttpShardHandler extends ShardHandler {
 
           if (shortCircuit) {
             rb.isDistrib = false;
+            rb.shortCircuitedURL = ZkCoreNodeProps.getCoreUrl(zkController.getBaseUrl(), coreDescriptor.getName());
             return;
           }
           // We shouldn't need to do anything to handle "shard.rows" since it was previously meant to be an optimization?
@@ -378,22 +453,19 @@ public class HttpShardHandler extends ShardHandler {
             Map<String, Replica> sliceShards = slice.getReplicasMap();
 
             // For now, recreate the | delimited list of equivalent servers
-            Set<String> liveNodes = clusterState.getLiveNodes();
             StringBuilder sliceShardsStr = new StringBuilder();
             boolean first = true;
-            for (ZkNodeProps nodeProps : sliceShards.values()) {
-              ZkCoreNodeProps coreNodeProps = new ZkCoreNodeProps(nodeProps);
-              if (!liveNodes.contains(coreNodeProps.getNodeName())
-                  || !coreNodeProps.getState().equals(
-                      ZkStateReader.ACTIVE)) continue;
+            for (Replica replica : sliceShards.values()) {
+              if (!clusterState.liveNodesContain(replica.getNodeName())
+                  || replica.getState() != Replica.State.ACTIVE) {
+                continue;
+              }
               if (first) {
                 first = false;
               } else {
                 sliceShardsStr.append('|');
               }
-              String url = coreNodeProps.getCoreUrl();
-              if (url.startsWith("http://"))
-                url = url.substring(7);
+              String url = ZkCoreNodeProps.getCoreUrl(replica);
               sliceShardsStr.append(url);
             }
 
@@ -417,6 +489,10 @@ public class HttpShardHandler extends ShardHandler {
     DocCollection coll = state.getCollection(collectionName);
     Collection<Slice> slices = coll.getRouter().getSearchSlices(shardKeys, params , coll);
     ClientUtils.addSlices(target, collectionName, slices, multiCollection);
+  }
+
+  public ShardHandlerFactory getShardHandlerFactory(){
+    return httpShardHandlerFactory;
   }
 
 

@@ -17,26 +17,41 @@
 
 package org.apache.solr.handler.component;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 
+import org.apache.lucene.index.ExitableDirectoryReader;
+import org.apache.lucene.util.Version;
+import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.ShardParams;
+import org.apache.solr.common.util.NamedList;
+import org.apache.solr.common.util.SimpleOrderedMap;
+import org.apache.solr.common.util.StrUtils;
 import org.apache.solr.core.CloseHook;
 import org.apache.solr.core.PluginInfo;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
+import org.apache.solr.search.SolrQueryTimeoutImpl;
+import org.apache.solr.search.facet.FacetModule;
 import org.apache.solr.util.RTimer;
 import org.apache.solr.util.SolrPluginUtils;
 import org.apache.solr.util.plugin.PluginInfoInitialized;
 import org.apache.solr.util.plugin.SolrCoreAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.solr.common.params.CommonParams.PATH;
 
 
 /**
@@ -56,19 +71,22 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
   
   protected static Logger log = LoggerFactory.getLogger(SearchHandler.class);
 
-  protected List<SearchComponent> components = null;
+  protected volatile List<SearchComponent> components;
   private ShardHandlerFactory shardHandlerFactory ;
   private PluginInfo shfInfo;
+  private SolrCore core;
 
   protected List<String> getDefaultComponents()
   {
-    ArrayList<String> names = new ArrayList<String>(6);
+    ArrayList<String> names = new ArrayList<>(6);
     names.add( QueryComponent.COMPONENT_NAME );
     names.add( FacetComponent.COMPONENT_NAME );
+    names.add( FacetModule.COMPONENT_NAME );
     names.add( MoreLikeThisComponent.COMPONENT_NAME );
     names.add( HighlightComponent.COMPONENT_NAME );
     names.add( StatsComponent.COMPONENT_NAME );
     names.add( DebugComponent.COMPONENT_NAME );
+    names.add( ExpandComponent.COMPONENT_NAME);
     return names;
   }
 
@@ -92,6 +110,38 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
   @SuppressWarnings("unchecked")
   public void inform(SolrCore core)
   {
+    this.core = core;
+    Set<String> missing = new HashSet<>();
+    List<String> c = (List<String>) initArgs.get(INIT_COMPONENTS);
+    missing.addAll(core.getSearchComponents().checkContains(c));
+    List<String> first = (List<String>) initArgs.get(INIT_FIRST_COMPONENTS);
+    missing.addAll(core.getSearchComponents().checkContains(first));
+    List<String> last = (List<String>) initArgs.get(INIT_LAST_COMPONENTS);
+    missing.addAll(core.getSearchComponents().checkContains(last));
+    if (!missing.isEmpty()) throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
+        "Missing SearchComponents named : " + missing);
+    if (c != null && (first != null || last != null)) throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
+        "First/Last components only valid if you do not declare 'components'");
+
+    if (shfInfo == null) {
+      shardHandlerFactory = core.getCoreDescriptor().getCoreContainer().getShardHandlerFactory();
+    } else {
+      shardHandlerFactory = core.createInitInstance(shfInfo, ShardHandlerFactory.class, null, null);
+      core.addCloseHook(new CloseHook() {
+        @Override
+        public void preClose(SolrCore core) {
+          shardHandlerFactory.close();
+        }
+
+        @Override
+        public void postClose(SolrCore core) {
+        }
+      });
+    }
+
+  }
+
+  private void initComponents() {
     Object declaredComponents = initArgs.get(INIT_COMPONENTS);
     List<String> first = (List<String>) initArgs.get(INIT_FIRST_COMPONENTS);
     List<String> last  = (List<String>) initArgs.get(INIT_LAST_COMPONENTS);
@@ -122,7 +172,7 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
     }
 
     // Build the component list
-    components = new ArrayList<SearchComponent>( list.size() );
+    List<SearchComponent> components = new ArrayList<>(list.size());
     DebugComponent dbgCmp = null;
     for(String c : list){
       SearchComponent comp = core.getSearchComponent( c );
@@ -137,33 +187,26 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
       components.add(dbgCmp);
       log.debug("Adding  debug component:" + dbgCmp);
     }
-    if(shfInfo ==null) {
-      shardHandlerFactory = core.getCoreDescriptor().getCoreContainer().getShardHandlerFactory();
-    } else {
-      shardHandlerFactory = core.createInitInstance(shfInfo, ShardHandlerFactory.class, null, null);
-      core.addCloseHook(new CloseHook() {
-        @Override
-        public void preClose(SolrCore core) {
-          shardHandlerFactory.close();
-        }
-        @Override
-        public void postClose(SolrCore core) {
-        }
-      });
-    }
-
+    this.components = components;
   }
 
   public List<SearchComponent> getComponents() {
-    return components;
+    List<SearchComponent> result = components;  // volatile read
+    if (result == null) {
+      synchronized (this) {
+        if (components == null) {
+          initComponents();
+        }
+        result = components;
+      }
+    }
+    return result;
   }
-  
 
   @Override
   public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws Exception
   {
-    // int sleep = req.getParams().getInt("sleep",0);
-    // if (sleep > 0) {log.error("SLEEPING for " + sleep);  Thread.sleep(sleep);}
+    List<SearchComponent> components  = getComponents();
     ResponseBuilder rb = new ResponseBuilder(req, rsp, components);
     if (rb.requestInfo != null) {
       rb.requestInfo.setResponseBuilder(rb);
@@ -175,8 +218,7 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
       SolrPluginUtils.getDebugInterests(req.getParams().getParams(CommonParams.DEBUG), rb);
     }
 
-    final RTimer timer = rb.isDebug() ? new RTimer() : null;
-
+    final RTimer timer = rb.isDebug() ? req.getRequestTimer() : null;
 
     ShardHandler shardHandler1 = shardHandlerFactory.getShardHandler();
     shardHandler1.checkDistributed(rb);
@@ -200,38 +242,57 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
     if (!rb.isDistrib) {
       // a normal non-distributed request
 
-      // The semantics of debugging vs not debugging are different enough that
-      // it makes sense to have two control loops
-      if(!rb.isDebug()) {
-        // Process
-        for( SearchComponent c : components ) {
-          c.process(rb);
-        }
+      long timeAllowed = req.getParams().getLong(CommonParams.TIME_ALLOWED, -1L);
+      if (timeAllowed > 0L) {
+        SolrQueryTimeoutImpl.set(timeAllowed);
       }
-      else {
-        // Process
-        RTimer subt = timer.sub( "process" );
-        for( SearchComponent c : components ) {
-          rb.setTimer( subt.sub( c.getName() ) );
-          c.process(rb);
-          rb.getTimer().stop();
+      try {
+        // The semantics of debugging vs not debugging are different enough that
+        // it makes sense to have two control loops
+        if(!rb.isDebug()) {
+          // Process
+          for( SearchComponent c : components ) {
+            c.process(rb);
+          }
         }
-        subt.stop();
-        timer.stop();
+        else {
+          // Process
+          RTimer subt = timer.sub( "process" );
+          for( SearchComponent c : components ) {
+            rb.setTimer( subt.sub( c.getName() ) );
+            c.process(rb);
+            rb.getTimer().stop();
+          }
+          subt.stop();
 
-        // add the timing info
-        if (rb.isDebugTimings()) {
-          rb.addDebugInfo("timing", timer.asNamedList() );
+          // add the timing info
+          if (rb.isDebugTimings()) {
+            rb.addDebugInfo("timing", timer.asNamedList() );
+          }
         }
+      } catch (ExitableDirectoryReader.ExitingReaderException ex) {
+        log.warn( "Query: " + req.getParamString() + "; " + ex.getMessage());
+        SolrDocumentList r = (SolrDocumentList) rb.rsp.getValues().get("response");
+        if(r == null)
+          r = new SolrDocumentList();
+        r.setNumFound(0);
+        rb.rsp.add("response", r);
+        if(rb.isDebug()) {
+          NamedList debug = new NamedList();
+          debug.add("explain", new NamedList());
+          rb.rsp.add("debug", debug);
+        }
+        rb.rsp.getResponseHeader().add("partialResults", Boolean.TRUE);
+      } finally {
+        SolrQueryTimeoutImpl.reset();
       }
-
     } else {
       // a distributed request
 
       if (rb.outgoing == null) {
-        rb.outgoing = new LinkedList<ShardRequest>();
+        rb.outgoing = new LinkedList<>();
       }
-      rb.finished = new ArrayList<ShardRequest>();
+      rb.finished = new ArrayList<>();
 
       int nextStage = 0;
       do {
@@ -255,26 +316,38 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
             if (sreq.actualShards==ShardRequest.ALL_SHARDS) {
               sreq.actualShards = rb.shards;
             }
-            sreq.responses = new ArrayList<ShardResponse>();
+            sreq.responses = new ArrayList<>();
 
             // TODO: map from shard to address[]
             for (String shard : sreq.actualShards) {
               ModifiableSolrParams params = new ModifiableSolrParams(sreq.params);
               params.remove(ShardParams.SHARDS);      // not a top-level request
-              params.set("distrib", "false");               // not a top-level request
+              params.set(CommonParams.DISTRIB, "false");               // not a top-level request
               params.remove("indent");
               params.remove(CommonParams.HEADER_ECHO_PARAMS);
               params.set(ShardParams.IS_SHARD, true);  // a sub (shard) request
+              params.set(ShardParams.SHARDS_PURPOSE, sreq.purpose);
               params.set(ShardParams.SHARD_URL, shard); // so the shard knows what was asked
               if (rb.requestInfo != null) {
                 // we could try and detect when this is needed, but it could be tricky
                 params.set("NOW", Long.toString(rb.requestInfo.getNOW().getTime()));
               }
               String shardQt = params.get(ShardParams.SHARDS_QT);
-              if (shardQt == null) {
-                params.remove(CommonParams.QT);
-              } else {
+              if (shardQt != null) {
                 params.set(CommonParams.QT, shardQt);
+              } else {
+                // for distributed queries that don't include shards.qt, use the original path
+                // as the default but operators need to update their luceneMatchVersion to enable
+                // this behavior since it did not work this way prior to 5.1
+                if (req.getCore().getSolrConfig().luceneMatchVersion.onOrAfter(Version.LUCENE_5_1_0)) {
+                  String reqPath = (String) req.getContext().get(PATH);
+                  if (!"/select".equals(reqPath)) {
+                    params.set(CommonParams.QT, reqPath);
+                  } // else if path is /select, then the qt gets passed thru if set
+                } else {
+                  // this is the pre-5.1 behavior, which translates to sending the shard request to /select
+                  params.remove(CommonParams.QT);
+                }
               }
               shardHandler1.submit(sreq, shard, params);
             }
@@ -301,6 +374,10 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
                 } else {
                   throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, srsp.getException());
                 }
+              } else {
+                if(rsp.getResponseHeader().get("partialResults") == null) {
+                  rsp.getResponseHeader().add("partialResults", Boolean.TRUE);
+                }
               }
             }
 
@@ -320,6 +397,37 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
         // we are done when the next stage is MAX_VALUE
       } while (nextStage != Integer.MAX_VALUE);
     }
+    
+    // SOLR-5550: still provide shards.info if requested even for a short circuited distrib request
+    if(!rb.isDistrib && req.getParams().getBool(ShardParams.SHARDS_INFO, false) && rb.shortCircuitedURL != null) {  
+      NamedList<Object> shardInfo = new SimpleOrderedMap<Object>();
+      SimpleOrderedMap<Object> nl = new SimpleOrderedMap<Object>();        
+      if (rsp.getException() != null) {
+        Throwable cause = rsp.getException();
+        if (cause instanceof SolrServerException) {
+          cause = ((SolrServerException)cause).getRootCause();
+        } else {
+          if (cause.getCause() != null) {
+            cause = cause.getCause();
+          }          
+        }
+        nl.add("error", cause.toString() );
+        StringWriter trace = new StringWriter();
+        cause.printStackTrace(new PrintWriter(trace));
+        nl.add("trace", trace.toString() );
+      }
+      else {
+        nl.add("numFound", rb.getResults().docList.matches());
+        nl.add("maxScore", rb.getResults().docList.maxScore());
+      }
+      nl.add("shardAddress", rb.shortCircuitedURL);
+      nl.add("time", req.getRequestTimer().getTime()); // elapsed time of this request so far
+      
+      int pos = rb.shortCircuitedURL.indexOf("://");        
+      String shardInfoName = pos != -1 ? rb.shortCircuitedURL.substring(pos+3) : rb.shortCircuitedURL;
+      shardInfo.add(shardInfoName, nl);   
+      rsp.getValues().add(ShardParams.SHARDS_INFO,shardInfo);            
+    }
   }
 
   //////////////////////// SolrInfoMBeans methods //////////////////////
@@ -336,15 +444,6 @@ public class SearchHandler extends RequestHandlerBase implements SolrCoreAware ,
     }
     return sb.toString();
   }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/component/SearchHandler.java $";
-  }
-
-	public ShardHandlerFactory getShardHandlerFactory() {
-		return shardHandlerFactory;
-	}
 }
 
 

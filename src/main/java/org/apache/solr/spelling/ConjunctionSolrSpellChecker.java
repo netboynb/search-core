@@ -19,6 +19,7 @@ package org.apache.solr.spelling;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -45,11 +46,11 @@ public class ConjunctionSolrSpellChecker extends SolrSpellChecker {
   private Float accuracy = null;
   private String dictionaryName = null;
   private Analyzer queryAnalyzer = null;
-  private List<SolrSpellChecker> checkers = new ArrayList<SolrSpellChecker>();
-  private boolean initalized = false;
+  private List<SolrSpellChecker> checkers = new ArrayList<>();
+  private boolean initialized = false;
   
   public void addChecker(SolrSpellChecker checker) {
-    if (initalized) {
+    if (initialized) {
       throw new IllegalStateException(
           "Need to add checkers before calling init()");
     }
@@ -101,7 +102,7 @@ public class ConjunctionSolrSpellChecker extends SolrSpellChecker {
     if (dictionaryName == null) {
       dictionaryName = DEFAULT_DICTIONARY_NAME;
     }
-    initalized = true;
+    initialized = true;
     return dictionaryName;
   }
   
@@ -136,8 +137,8 @@ public class ConjunctionSolrSpellChecker extends SolrSpellChecker {
   //TODO: This just interleaves the results.  In the future, we might want to let users give each checker its
   //      own weight and use that in combination to score & frequency to sort the results ?
   private SpellingResult mergeCheckers(SpellingResult[] results, int numSug) {
-    Map<Token, Integer> combinedTokenFrequency = new HashMap<Token, Integer>();
-    Map<Token, List<LinkedHashMap<String, Integer>>> allSuggestions = new LinkedHashMap<Token, List<LinkedHashMap<String, Integer>>>();
+    Map<Token, Integer> combinedTokenFrequency = new HashMap<>();
+    Map<Token, List<LinkedHashMap<String, Integer>>> allSuggestions = new LinkedHashMap<>();
     for(SpellingResult result : results) {
       if(result.getTokenFrequency()!=null) {
         combinedTokenFrequency.putAll(result.getTokenFrequency());
@@ -145,7 +146,7 @@ public class ConjunctionSolrSpellChecker extends SolrSpellChecker {
       for(Map.Entry<Token, LinkedHashMap<String, Integer>> entry : result.getSuggestions().entrySet()) {
         List<LinkedHashMap<String, Integer>> allForThisToken = allSuggestions.get(entry.getKey());
         if(allForThisToken==null) {
-          allForThisToken = new ArrayList<LinkedHashMap<String, Integer>>();
+          allForThisToken = new ArrayList<>();
           allSuggestions.put(entry.getKey(), allForThisToken);
         }
         allForThisToken.add(entry.getValue());
@@ -154,7 +155,7 @@ public class ConjunctionSolrSpellChecker extends SolrSpellChecker {
     SpellingResult combinedResult = new SpellingResult();    
     for(Map.Entry<Token, List<LinkedHashMap<String, Integer>>> entry : allSuggestions.entrySet()) {
       Token original = entry.getKey();      
-      List<Iterator<Map.Entry<String,Integer>>> corrIters = new ArrayList<Iterator<Map.Entry<String,Integer>>>(entry.getValue().size());
+      List<Iterator<Map.Entry<String,Integer>>> corrIters = new ArrayList<>(entry.getValue().size());
       for(LinkedHashMap<String, Integer> corrections : entry.getValue()) {
         corrIters.add(corrections.entrySet().iterator());
       }        
@@ -167,17 +168,20 @@ public class ConjunctionSolrSpellChecker extends SolrSpellChecker {
             Map.Entry<String,Integer> corr = iter.next();
             combinedResult.add(original, corr.getKey(), corr.getValue());
             Integer tokenFrequency = combinedTokenFrequency.get(original);
-            if(tokenFrequency!=null) {
-              combinedResult.addFrequency(original, tokenFrequency);
-            }
+            combinedResult.addFrequency(original, tokenFrequency==null ? 0 : tokenFrequency);
             if(++numberAdded==numSug) {
               break;
             }
           }
         }        
         if(!anyData) {
+          if(numberAdded==0) {
+            combinedResult.add(original, Collections.<String>emptyList());
+            Integer tokenFrequency = combinedTokenFrequency.get(original);
+            combinedResult.addFrequency(original, tokenFrequency==null ? 0 : tokenFrequency);
+          }
           break;
-        }
+        }        
       }      
     }    
     return combinedResult;

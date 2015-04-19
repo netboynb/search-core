@@ -16,55 +16,26 @@ package org.apache.solr.highlight;
  * limitations under the License.
  */
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.apache.lucene.search.Query;
 import org.apache.solr.common.params.HighlightParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
-import org.apache.solr.core.SolrConfig;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.search.DocList;
 import org.apache.solr.util.SolrPluginUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 
 public abstract class SolrHighlighter
 {
+
+  public static int DEFAULT_PHRASE_LIMIT = 5000;
   public static Logger log = LoggerFactory.getLogger(SolrHighlighter.class);
-
-  // Thread safe registry
-  protected final Map<String,SolrFormatter> formatters =
-    new HashMap<String, SolrFormatter>();
-
-  // Thread safe registry
-  protected final Map<String,SolrEncoder> encoders =
-    new HashMap<String, SolrEncoder>();
-
-  // Thread safe registry
-  protected final Map<String,SolrFragmenter> fragmenters =
-    new HashMap<String, SolrFragmenter>() ;
-
-  // Thread safe registry
-  protected final Map<String, SolrFragListBuilder> fragListBuilders =
-    new HashMap<String, SolrFragListBuilder>() ;
-
-  // Thread safe registry
-  protected final Map<String, SolrFragmentsBuilder> fragmentsBuilders =
-    new HashMap<String, SolrFragmentsBuilder>() ;
-
-  // Thread safe registry
-  protected final Map<String, SolrBoundaryScanner> boundaryScanners =
-    new HashMap<String, SolrBoundaryScanner>() ;
-
-  @Deprecated
-  public abstract void initalize( SolrConfig config );
-
 
   /**
    * Check whether Highlighting is enabled for this request.
@@ -102,19 +73,23 @@ public abstract class SolrHighlighter
         // create a Java regular expression from the wildcard string
         String fieldRegex = fields[0].replaceAll("\\*", ".*");
         Collection<String> storedHighlightFieldNames = request.getSearcher().getStoredHighlightFieldNames();
-        List<String> storedFieldsToHighlight = new ArrayList<String>();
+        List<String> storedFieldsToHighlight = new ArrayList<>();
         for (String storedFieldName: storedHighlightFieldNames) {
-            if (storedFieldName.matches(fieldRegex)) {
-              storedFieldsToHighlight.add(storedFieldName);
-            }
+          if (storedFieldName.matches(fieldRegex)) {
+            storedFieldsToHighlight.add(storedFieldName);
+          }
         }
-        fields = storedFieldsToHighlight.toArray(new String[] {});
+        fields = storedFieldsToHighlight.toArray(new String[storedFieldsToHighlight.size()]);
       } else {
         // if there's a single request/handler value, it may be a space/comma separated list
         fields = SolrPluginUtils.split(fields[0]);
       }
     }
 
+    // Trim them now in case they haven't been yet.  Not needed for all code-paths above but do it here.
+    for (int i = 0; i < fields.length; i++) {
+      fields[i] = fields[i].trim();
+    }
     return fields;
   }
 

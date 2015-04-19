@@ -34,6 +34,7 @@ import java.io.StringReader;
 import java.net.URL;
 import java.text.NumberFormat;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -52,7 +53,7 @@ public class SolrInfoMBeanHandler extends RequestHandlerBase {
    * Set is guarantee to never be null (but may be empty)
    */
   private Set<String> arrayToSet(Object[] arr) {
-    HashSet<String> r = new HashSet<String>();
+    HashSet<String> r = new HashSet<>();
     if (null == arr) return r;
     for (Object o : arr) {
       if (null != o) r.add(o.toString());
@@ -114,7 +115,7 @@ public class SolrInfoMBeanHandler extends RequestHandlerBase {
   
   protected NamedList<NamedList<NamedList<Object>>> getMBeanInfo(SolrQueryRequest req) {
 
-    NamedList<NamedList<NamedList<Object>>> cats = new NamedList<NamedList<NamedList<Object>>>();
+    NamedList<NamedList<NamedList<Object>>> cats = new NamedList<>();
     
     String[] requestedCats = req.getParams().getParams("cat");
     if (null == requestedCats || 0 == requestedCats.length) {
@@ -131,36 +132,39 @@ public class SolrInfoMBeanHandler extends RequestHandlerBase {
     
     Map<String, SolrInfoMBean> reg = req.getCore().getInfoRegistry();
     for (Map.Entry<String, SolrInfoMBean> entry : reg.entrySet()) {
-      String key = entry.getKey();
-      SolrInfoMBean m = entry.getValue();
+      addMBean(req, cats, requestedKeys, entry.getKey(),entry.getValue());
+    }
 
-      if ( ! ( requestedKeys.isEmpty() || requestedKeys.contains(key) ) ) continue;
-
-      NamedList<NamedList<Object>> catInfo = cats.get(m.getCategory().name());
-      if ( null == catInfo ) continue;
-
-      NamedList<Object> mBeanInfo = new SimpleOrderedMap<Object>();
-      mBeanInfo.add("class", m.getName());
-      mBeanInfo.add("version", m.getVersion());
-      mBeanInfo.add("description", m.getDescription());
-      mBeanInfo.add("src", m.getSource());
-      
-      // Use an external form
-      URL[] urls = m.getDocs();
-      if(urls!=null) {
-        List<String> docs = new ArrayList<String>(urls.length);
-        for(URL url : urls) {
-          docs.add(url.toExternalForm());
-        }
-        mBeanInfo.add("docs", docs);
-      }
-      
-      if (req.getParams().getFieldBool(key, "stats", false))
-        mBeanInfo.add("stats", m.getStatistics());
-      
-      catInfo.add(key, mBeanInfo);
+    for (SolrInfoMBean infoMBean : req.getCore().getCoreDescriptor().getCoreContainer().getResourceLoader().getInfoMBeans()) {
+      addMBean(req,cats,requestedKeys,infoMBean.getName(),infoMBean);
     }
     return cats;
+  }
+
+  private void addMBean(SolrQueryRequest req, NamedList<NamedList<NamedList<Object>>> cats, Set<String> requestedKeys, String key, SolrInfoMBean m) {
+    if ( ! ( requestedKeys.isEmpty() || requestedKeys.contains(key) ) ) return;
+    NamedList<NamedList<Object>> catInfo = cats.get(m.getCategory().name());
+    if ( null == catInfo ) return;
+    NamedList<Object> mBeanInfo = new SimpleOrderedMap<>();
+    mBeanInfo.add("class", m.getName());
+    mBeanInfo.add("version", m.getVersion());
+    mBeanInfo.add("description", m.getDescription());
+    mBeanInfo.add("src", m.getSource());
+
+    // Use an external form
+    URL[] urls = m.getDocs();
+    if(urls!=null) {
+      List<String> docs = new ArrayList<>(urls.length);
+      for(URL url : urls) {
+        docs.add(url.toExternalForm());
+      }
+      mBeanInfo.add("docs", docs);
+    }
+
+    if (req.getParams().getFieldBool(key, "stats", false))
+      mBeanInfo.add("stats", m.getStatistics());
+
+    catInfo.add(key, mBeanInfo);
   }
 
   protected NamedList<NamedList<NamedList<Object>>> getDiff(
@@ -168,7 +172,7 @@ public class SolrInfoMBeanHandler extends RequestHandlerBase {
       NamedList<NamedList<NamedList<Object>>> now,
       boolean includeAll ) {
     
-    NamedList<NamedList<NamedList<Object>>> changed = new NamedList<NamedList<NamedList<Object>>>();
+    NamedList<NamedList<NamedList<Object>>> changed = new NamedList<>();
     
     // Cycle through each category
     for(int i=0;i<ref.size();i++) {
@@ -182,7 +186,7 @@ public class SolrInfoMBeanHandler extends RequestHandlerBase {
           // Something in the category changed
           // Now iterate the real beans
           
-          NamedList<NamedList<Object>> cat = new SimpleOrderedMap<NamedList<Object>>();
+          NamedList<NamedList<Object>> cat = new SimpleOrderedMap<>();
           for(int j=0;j<ref_cat.size();j++) {
             String name = ref_cat.getName(j);
             NamedList<Object> ref_bean = ref_cat.get(name);
@@ -295,10 +299,5 @@ public class SolrInfoMBeanHandler extends RequestHandlerBase {
   @Override
   public String getDescription() {
     return "Get Info (and statistics) for registered SolrInfoMBeans";
-  }
-
-  @Override
-  public String getSource() {    
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/admin/SolrInfoMBeanHandler.java $";
   }
 }

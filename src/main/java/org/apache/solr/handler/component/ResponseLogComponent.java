@@ -20,7 +20,6 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.Set;
 
-import org.apache.lucene.index.StoredFieldVisitor;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.response.ResultContext;
 import org.apache.solr.schema.IndexSchema;
@@ -67,11 +66,11 @@ public class ResponseLogComponent extends SearchComponent {
     SolrParams params = rb.req.getParams();
     if (!params.getBool(COMPONENT_NAME, false)) return;
     
-    IndexSchema schema = rb.req.getSchema();
+    SolrIndexSearcher searcher = rb.req.getSearcher();
+    IndexSchema schema = searcher.getSchema();
     if (schema.getUniqueKeyField() == null) return;
 
     ResultContext rc = (ResultContext) rb.rsp.getValues().get("response");
-    SolrIndexSearcher searcher = rb.req.getSearcher();    
     
     if (rc.docs.hasScores()) {
       processScores(rb, rc.docs, schema, searcher);
@@ -116,10 +115,4 @@ public class ResponseLogComponent extends SearchComponent {
   public String getDescription() {
     return "A component that inserts the retrieved documents (and optionally scores) into the response log entry";
   }
-
-  @Override
-  public String getSource() {
-    return "$URL$";
-  }
-  
 }

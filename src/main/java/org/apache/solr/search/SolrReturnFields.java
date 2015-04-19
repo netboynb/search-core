@@ -22,6 +22,7 @@ import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.QueryValueSource;
 import org.apache.lucene.search.Query;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.MapSolrParams;
 import org.apache.solr.common.params.SolrParams;
@@ -49,17 +50,17 @@ public class SolrReturnFields extends ReturnFields {
   // Special Field Keys
   public static final String SCORE = "score";
 
-  private final List<String> globs = new ArrayList<String>(1);
+  private final List<String> globs = new ArrayList<>(1);
 
   // The lucene field names to request from the SolrIndexSearcher
-  // Order is important for CSVResponseWriter
-  private final Set<String> fields = new LinkedHashSet<String>();
+  private final Set<String> fields = new HashSet<>();
 
   // Field names that are OK to include in the response.
   // This will include pseudo fields, lucene fields, and matching globs
-  private Set<String> okFieldNames = new HashSet<String>();
+  private Set<String> okFieldNames = new HashSet<>();
 
   // The list of explicitly requested fields
+  // Order is important for CSVResponseWriter
   private Set<String> reqFieldNames = null;
   
   protected DocTransformer transformer;
@@ -106,7 +107,7 @@ public class SolrReturnFields extends ReturnFields {
       return;
     }
 
-    NamedList<String> rename = new NamedList<String>();
+    NamedList<String> rename = new NamedList<>();
     DocTransformers augmenters = new DocTransformers();
     for (String fieldList : fl) {
       add(fieldList,rename,augmenters,req);
@@ -122,7 +123,7 @@ public class SolrReturnFields extends ReturnFields {
           if(from.equals(rename.getName(j))) {
             rename.setName(j, to); // copy from the current target
             if(reqFieldNames==null) {
-              reqFieldNames = new HashSet<String>();
+              reqFieldNames = new LinkedHashSet<>();
             }
             reqFieldNames.add(to); // don't rename our current target
           }
@@ -151,7 +152,7 @@ public class SolrReturnFields extends ReturnFields {
   }
 
   // like getId, but also accepts dashes for legacy fields
-  String getFieldName(QueryParsing.StrParser sp) {
+  public static String getFieldName(QueryParsing.StrParser sp) {
     sp.eatws();
     int id_start = sp.pos;
     char ch;
@@ -198,7 +199,7 @@ public class SolrReturnFields extends ReturnFields {
             start = sp.pos;
           } else {
             if (Character.isWhitespace(ch) || ch == ',' || ch==0) {
-              addField( field, key, augmenters, req );
+              addField(field, key, augmenters, false);
               continue;
             }
             // an invalid field name... reset the position pointer to retry
@@ -213,7 +214,7 @@ public class SolrReturnFields extends ReturnFields {
           ch = sp.ch();
           if (field != null && (Character.isWhitespace(ch) || ch == ',' || ch==0)) {
             rename.add(field, key);
-            addField( field, key, augmenters, req );
+            addField(field, key, augmenters, false);
             continue;
           }
           // an invalid field name... reset the position pointer to retry
@@ -247,7 +248,7 @@ public class SolrReturnFields extends ReturnFields {
         // This is identical to localParams syntax except it uses [] instead of {!}
 
         if (funcStr.startsWith("[")) {
-          Map<String,String> augmenterArgs = new HashMap<String,String>();
+          Map<String,String> augmenterArgs = new HashMap<>();
           int end = QueryParsing.parseLocalParams(funcStr, 0, augmenterArgs, req.getParams(), "[", ']');
           sp.pos += end;
 
@@ -261,12 +262,15 @@ public class SolrReturnFields extends ReturnFields {
           TransformerFactory factory = req.getCore().getTransformerFactory( augmenterName );
           if( factory != null ) {
             MapSolrParams augmenterParams = new MapSolrParams( augmenterArgs );
-            augmenters.addTransformer( factory.create(disp, augmenterParams, req) );
+            DocTransformer t = factory.create(disp, augmenterParams, req);
+            if(t!=null) {
+              augmenters.addTransformer( t );
+            }
           }
           else {
-            // unknown transformer?
+            //throw new SolrException(ErrorCode.BAD_REQUEST, "Unknown DocTransformer: "+augmenterName);
           }
-          addField(field, disp, augmenters, req);
+          addField(field, disp, augmenters, true);
           continue;
         }
 
@@ -307,6 +311,7 @@ public class SolrReturnFields extends ReturnFields {
             assert parser.getLocalParams() != null;
             sp.pos = start + parser.localParamsEnd;
           }
+          funcStr = sp.val.substring(start, sp.pos);
 
 
           if (q instanceof FunctionQuery) {
@@ -320,18 +325,12 @@ public class SolrReturnFields extends ReturnFields {
             if (localParams != null) {
               key = localParams.get("key");
             }
-            if (key == null) {
-              // use the function name itself as the field name
-              key = sp.val.substring(start, sp.pos);
-            }
           }
-
 
           if (key==null) {
             key = funcStr;
           }
-          okFieldNames.add( key );
-          okFieldNames.add( funcStr );
+          addField(funcStr, key, augmenters, true);
           augmenters.addTransformer( new ValueSourceAugmenter( key, parser, vs ) );
         }
         catch (SyntaxError e) {
@@ -341,7 +340,7 @@ public class SolrReturnFields extends ReturnFields {
 
           if (req.getSchema().getFieldOrNull(field) != null) {
             // OK, it was an oddly named field
-            fields.add(field);
+            addField(field, key, augmenters, false);
             if( key != null ) {
               rename.add(field, key);
             }
@@ -358,16 +357,25 @@ public class SolrReturnFields extends ReturnFields {
     }
   }
 
-  private void addField(String field, String key, DocTransformers augmenters, SolrQueryRequest req)
+  private void addField(String field, String key, DocTransformers augmenters, boolean isPseudoField)
   {
+    if(reqFieldNames==null) {
+      reqFieldNames = new LinkedHashSet<>();
+    }
+    
     if(key==null) {
-      if(reqFieldNames==null) {
-        reqFieldNames = new HashSet<String>();
-      }
       reqFieldNames.add(field);
     }
+    else {
+      reqFieldNames.add(key);
+    }
 
-    fields.add(field); // need to put in the map to maintain order for things like CSVResponseWriter
+    if ( ! isPseudoField) {
+      // fields is returned by getLuceneFieldNames(), to be used to select which real fields
+      // to return, so pseudo-fields should not be added
+      fields.add(field);
+    }
+
     okFieldNames.add( field );
     okFieldNames.add( key );
     // a valid field name
@@ -383,6 +391,19 @@ public class SolrReturnFields extends ReturnFields {
   public Set<String> getLuceneFieldNames()
   {
     return (_wantsAllFields || fields.isEmpty()) ? null : fields;
+  }
+
+  @Override
+  public Set<String> getRequestedFieldNames() {
+    if(_wantsAllFields || reqFieldNames==null || reqFieldNames.isEmpty()) {
+      return null;
+    }
+    return reqFieldNames;
+  }
+  
+  @Override
+  public boolean hasPatternMatching() {
+    return !globs.isEmpty();
   }
 
   @Override

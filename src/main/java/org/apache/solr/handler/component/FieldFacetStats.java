@@ -23,12 +23,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.lucene.index.AtomicReader;
-import org.apache.lucene.index.AtomicReaderContext;
+import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
-import org.apache.lucene.search.FieldCache;
 import org.apache.lucene.util.BytesRef;
 import org.apache.solr.schema.SchemaField;
 import org.apache.solr.search.SolrIndexSearcher;
@@ -39,46 +39,44 @@ import org.apache.solr.search.SolrIndexSearcher;
  * for facet values present in another field.
  * <p>
  * 9/10/2009 - Moved out of StatsComponent to allow open access to UnInvertedField
- * <p/>
  * @see org.apache.solr.handler.component.StatsComponent
  *
  */
 
 public class FieldFacetStats {
   public final String name;
+  final StatsField statsField;
   final SchemaField facet_sf;
-  final SchemaField field_sf;
 
   public final Map<String, StatsValues> facetStatsValues;
-
+  private final Map<Integer, Integer> missingStats;
   List<HashMap<String, Integer>> facetStatsTerms;
 
-  final AtomicReader topLevelReader;
-  AtomicReaderContext leave;
+  final LeafReader topLevelReader;
+  LeafReaderContext leave;
   final ValueSource valueSource;
-  AtomicReaderContext context;
+  LeafReaderContext context;
   FunctionValues values;
 
   SortedDocValues topLevelSortedValues = null;
 
-  private final BytesRef tempBR = new BytesRef();
-
-  public FieldFacetStats(SolrIndexSearcher searcher, String name, SchemaField field_sf, SchemaField facet_sf) {
-    this.name = name;
-    this.field_sf = field_sf;
+  public FieldFacetStats(SolrIndexSearcher searcher, SchemaField facet_sf, StatsField statsField) {
+    this.statsField = statsField;
     this.facet_sf = facet_sf;
+    this.name = facet_sf.getName();
 
-    topLevelReader = searcher.getAtomicReader();
+    topLevelReader = searcher.getLeafReader();
     valueSource = facet_sf.getType().getValueSource(facet_sf, null);
 
-    facetStatsValues = new HashMap<String, StatsValues>();
-    facetStatsTerms = new ArrayList<HashMap<String, Integer>>();
+    facetStatsValues = new HashMap<>();
+    facetStatsTerms = new ArrayList<>();
+    missingStats = new HashMap<>();
   }
 
   private StatsValues getStatsValues(String key) throws IOException {
     StatsValues stats = facetStatsValues.get(key);
     if (stats == null) {
-      stats = StatsValuesFactory.createStatsValues(field_sf);
+      stats = StatsValuesFactory.createStatsValues(statsField);
       facetStatsValues.put(key, stats);
       stats.setNextReader(context);
     }
@@ -98,23 +96,25 @@ public class FieldFacetStats {
   // Currently only used by UnInvertedField stats
   public boolean facetTermNum(int docID, int statsTermNum) throws IOException {
     if (topLevelSortedValues == null) {
-      topLevelSortedValues = FieldCache.DEFAULT.getTermsIndex(topLevelReader, name);
+      topLevelSortedValues = DocValues.getSorted(topLevelReader, name);
     }
+ 
     
     int term = topLevelSortedValues.getOrd(docID);
+    
     int arrIdx = term;
     if (arrIdx >= 0 && arrIdx < topLevelSortedValues.getValueCount()) {
-      final BytesRef br;
+      final String key;
       if (term == -1) {
-        br = null;
+        key = null;
       } else {
-        br = tempBR;
-        topLevelSortedValues.lookupOrd(term, tempBR);
+        key = topLevelSortedValues.lookupOrd(term).utf8ToString();
       }
-      String key = br == null ? null : br.utf8ToString();
       while (facetStatsTerms.size() <= statsTermNum) {
         facetStatsTerms.add(new HashMap<String, Integer>());
       }
+      
+      
       final Map<String, Integer> statsTermCounts = facetStatsTerms.get(statsTermNum);
       Integer statsTermCount = statsTermCounts.get(key);
       if (statsTermCount == null) {
@@ -124,6 +124,7 @@ public class FieldFacetStats {
       }
       return true;
     }
+    
     return false;
   }
 
@@ -134,12 +135,11 @@ public class FieldFacetStats {
     while (facetStatsTerms.size() <= statsTermNum) {
       facetStatsTerms.add(new HashMap<String, Integer>());
     }
-    for (Map.Entry<String, Integer> stringIntegerEntry : facetStatsTerms.get(statsTermNum).entrySet()) {
-      Map.Entry pairs = (Map.Entry) stringIntegerEntry;
+    for (Map.Entry<String, Integer> pairs : facetStatsTerms.get(statsTermNum).entrySet()) {
       String key = (String) pairs.getKey();
       StatsValues facetStats = facetStatsValues.get(key);
       if (facetStats == null) {
-        facetStats = StatsValuesFactory.createStatsValues(field_sf);
+        facetStats = StatsValuesFactory.createStatsValues(statsField);
         facetStatsValues.put(key, facetStats);
       }
       Integer count = (Integer) pairs.getValue();
@@ -150,7 +150,7 @@ public class FieldFacetStats {
     return true;
   }
 
-  public void setNextReader(AtomicReaderContext ctx) throws IOException {
+  public void setNextReader(LeafReaderContext ctx) throws IOException {
     this.context = ctx;
     values = valueSource.getValues(Collections.emptyMap(), ctx);
     for (StatsValues stats : facetStatsValues.values()) {
@@ -158,6 +158,35 @@ public class FieldFacetStats {
     }
   }
 
+  public void facetMissingNum(int docID) throws IOException {
+    if (topLevelSortedValues == null) {
+      topLevelSortedValues = DocValues.getSorted(topLevelReader, name);
+    }
+    
+    int ord = topLevelSortedValues.getOrd(docID);
+    if (ord != -1) {
+      Integer missingCount = missingStats.get(ord);
+      if (missingCount == null) {
+        missingStats.put(ord, 1);
+      } else {
+        missingStats.put(ord, missingCount + 1);
+      }
+    }
+  }
+  
+  public void accumulateMissing() throws IOException {
+    StatsValues statsValue;
+    
+    for (Map.Entry<Integer, Integer> entry : missingStats.entrySet()) {
+      if (entry.getKey() >= 0) {
+        String key = topLevelSortedValues.lookupOrd(entry.getKey()).utf8ToString();
+        if ((statsValue = facetStatsValues.get(key)) != null) {
+          statsValue.addMissing(entry.getValue());
+        }
+      }
+    }
+    return;
+  }
 }
 
 

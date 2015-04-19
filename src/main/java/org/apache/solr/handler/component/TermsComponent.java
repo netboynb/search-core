@@ -18,7 +18,8 @@ package org.apache.solr.handler.component;
 
 import org.apache.lucene.index.*;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.CharsRef;
+import org.apache.lucene.util.BytesRefBuilder;
+import org.apache.lucene.util.CharsRefBuilder;
 import org.apache.lucene.util.StringHelper;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.*;
@@ -29,7 +30,6 @@ import org.apache.solr.schema.FieldType;
 import org.apache.solr.schema.StrField;
 import org.apache.solr.request.SimpleFacets.CountPair;
 import org.apache.solr.util.BoundedTreeSet;
-
 import org.apache.solr.client.solrj.response.TermsResponse;
 
 import java.io.IOException;
@@ -89,7 +89,7 @@ public class TermsComponent extends SearchComponent {
 
     String[] fields = params.getParams(TermsParams.TERMS_FIELD);
 
-    NamedList<Object> termsResult = new SimpleOrderedMap<Object>();
+    NamedList<Object> termsResult = new SimpleOrderedMap<>();
     rb.rsp.add("terms", termsResult);
 
     if (fields == null || fields.length==0) return;
@@ -117,16 +117,16 @@ public class TermsComponent extends SearchComponent {
     boolean raw = params.getBool(TermsParams.TERMS_RAW, false);
 
 
-    final AtomicReader indexReader = rb.req.getSearcher().getAtomicReader();
+    final LeafReader indexReader = rb.req.getSearcher().getLeafReader();
     Fields lfields = indexReader.fields();
 
     for (String field : fields) {
-      NamedList<Integer> fieldTerms = new NamedList<Integer>();
+      NamedList<Integer> fieldTerms = new NamedList<>();
       termsResult.add(field, fieldTerms);
 
-      Terms terms = lfields == null ? null : lfields.terms(field);
+      Terms terms = lfields.terms(field);
       if (terms == null) {
-        // no terms for this field
+        // field does not exist
         continue;
       }
 
@@ -138,8 +138,9 @@ public class TermsComponent extends SearchComponent {
 
       BytesRef upperBytes = null;
       if (upperStr != null) {
-        upperBytes = new BytesRef();
-        ft.readableToIndexed(upperStr, upperBytes);
+        BytesRefBuilder b = new BytesRefBuilder();
+        ft.readableToIndexed(upperStr, b);
+        upperBytes = b.get();
       }
 
       BytesRef lowerBytes;
@@ -153,17 +154,18 @@ public class TermsComponent extends SearchComponent {
           // perhaps we detect if the FieldType is non-character and expect hex if so?
           lowerBytes = new BytesRef(lowerStr);
         } else {
-          lowerBytes = new BytesRef();
-          ft.readableToIndexed(lowerStr, lowerBytes);
+          BytesRefBuilder b = new BytesRefBuilder();
+          ft.readableToIndexed(lowerStr, b);
+          lowerBytes = b.get();
         }
       }
 
 
-     TermsEnum termsEnum = terms.iterator(null);
+     TermsEnum termsEnum = terms.iterator();
      BytesRef term = null;
 
       if (lowerBytes != null) {
-        if (termsEnum.seekCeil(lowerBytes, true) == TermsEnum.SeekStatus.END) {
+        if (termsEnum.seekCeil(lowerBytes) == TermsEnum.SeekStatus.END) {
           termsEnum = null;
         } else {
           term = termsEnum.term();
@@ -179,7 +181,7 @@ public class TermsComponent extends SearchComponent {
 
       int i = 0;
       BoundedTreeSet<CountPair<BytesRef, Integer>> queue = (sort ? new BoundedTreeSet<CountPair<BytesRef, Integer>>(limit) : null);
-      CharsRef external = new CharsRef();
+      CharsRefBuilder external = new CharsRefBuilder();
       while (term != null && (i<limit || sort)) {
         boolean externalized = false; // did we fill in "external" yet for this term?
 
@@ -191,7 +193,7 @@ public class TermsComponent extends SearchComponent {
           // TODO: support "raw" mode?
           ft.indexedToReadable(term, external);
           externalized = true;
-          if (!pattern.matcher(external).matches()) {
+          if (!pattern.matcher(external.get()).matches()) {
             term = termsEnum.next();
             continue;
           }
@@ -208,7 +210,7 @@ public class TermsComponent extends SearchComponent {
         if (docFreq >= freqmin && docFreq <= freqmax) {
           // add the term to the list
           if (sort) {
-            queue.add(new CountPair<BytesRef, Integer>(BytesRef.deepCopyOf(term), docFreq));
+            queue.add(new CountPair<>(BytesRef.deepCopyOf(term), docFreq));
           } else {
 
             // TODO: handle raw somehow
@@ -326,7 +328,7 @@ public class TermsComponent extends SearchComponent {
     private SolrParams params;
 
     public TermsHelper() {
-      fieldmap = new HashMap<String, HashMap<String, TermsResponse.Term>>(5);
+      fieldmap = new HashMap<>(5);
     }
 
     public void init(SolrParams params) {
@@ -374,7 +376,7 @@ public class TermsComponent extends SearchComponent {
     }
 
     public NamedList buildResponse() {
-      NamedList<Object> response = new SimpleOrderedMap<Object>();
+      NamedList<Object> response = new SimpleOrderedMap<>();
 
       // determine if we are going index or count sort
       boolean sort = !TermsParams.TERMS_SORT_INDEX.equals(params.get(
@@ -403,7 +405,7 @@ public class TermsComponent extends SearchComponent {
 
       // loop though each field we want terms from
       for (String key : fieldmap.keySet()) {
-        NamedList<Number> fieldterms = new SimpleOrderedMap<Number>();
+        NamedList<Number> fieldterms = new SimpleOrderedMap<>();
         TermsResponse.Term[] data = null;
         if (sort) {
           data = getCountSorted(fieldmap.get(key));
@@ -472,11 +474,6 @@ public class TermsComponent extends SearchComponent {
 
       return arr;
     }
-  }
-
-  @Override
-  public String getSource() {
-    return "$URL: https://svn.apache.org/repos/asf/lucene/dev/branches/lucene_solr_4_2/solr/core/src/java/org/apache/solr/handler/component/TermsComponent.java $";
   }
 
   @Override

@@ -46,14 +46,16 @@ import org.slf4j.LoggerFactory;
  *
  * @since solr 1.3
  */
-public class LogUpdateProcessorFactory extends UpdateRequestProcessorFactory {
+public class LogUpdateProcessorFactory extends UpdateRequestProcessorFactory implements UpdateRequestProcessorFactory.RunAlways {
   
   int maxNumToLog = 10;
+  int slowUpdateThresholdMillis = -1;
   @Override
   public void init( final NamedList args ) {
     if( args != null ) {
       SolrParams params = SolrParams.toSolrParams( args );
       maxNumToLog = params.getInt( "maxNumToLog", maxNumToLog );
+      slowUpdateThresholdMillis = params.getInt("slowUpdateThresholdMillis", slowUpdateThresholdMillis);
     }
   }
 
@@ -78,6 +80,7 @@ class LogUpdateProcessor extends UpdateRequestProcessor {
   private List<String> deletes;
 
   private final int maxNumToLog;
+  private final int slowUpdateThresholdMillis;
 
   private final boolean logDebug = log.isDebugEnabled();//cache to avoid volatile-read
 
@@ -88,8 +91,9 @@ class LogUpdateProcessor extends UpdateRequestProcessor {
     maxNumToLog = factory.maxNumToLog;  // TODO: make configurable
     // TODO: make log level configurable as well, or is that overkill?
     // (ryan) maybe?  I added it mostly to show that it *can* be configurable
+    slowUpdateThresholdMillis = factory.slowUpdateThresholdMillis;
 
-    this.toLog = new SimpleOrderedMap<Object>();
+    this.toLog = new SimpleOrderedMap<>();
   }
   
   @Override
@@ -101,7 +105,7 @@ class LogUpdateProcessor extends UpdateRequestProcessor {
 
     // Add a list of added id's to the response
     if (adds == null) {
-      adds = new ArrayList<String>();
+      adds = new ArrayList<>();
       toLog.add("add",adds);
     }
 
@@ -122,7 +126,7 @@ class LogUpdateProcessor extends UpdateRequestProcessor {
 
     if (cmd.isDeleteById()) {
       if (deletes == null) {
-        deletes = new ArrayList<String>();
+        deletes = new ArrayList<>();
         toLog.add("delete",deletes);
       }
       if (deletes.size() < maxNumToLog) {
@@ -181,22 +185,33 @@ class LogUpdateProcessor extends UpdateRequestProcessor {
     // LOG A SUMMARY WHEN ALL DONE (INFO LEVEL)
 
     if (log.isInfoEnabled()) {
-      StringBuilder sb = new StringBuilder(rsp.getToLogAsString(req.getCore().getLogId()));
-
-      rsp.getToLog().clear();   // make it so SolrCore.exec won't log this again
-
-      // if id lists were truncated, show how many more there were
-      if (adds != null && numAdds > maxNumToLog) {
-        adds.add("... (" + numAdds + " adds)");
-      }
-      if (deletes != null && numDeletes > maxNumToLog) {
-        deletes.add("... (" + numDeletes + " deletes)");
-      }
-      long elapsed = rsp.getEndTime() - req.getStartTime();
-
-      sb.append(toLog).append(" 0 ").append(elapsed);
-      log.info(sb.toString());
+      log.info(getLogStringAndClearRspToLog());
     }
+
+    if (log.isWarnEnabled() && slowUpdateThresholdMillis >= 0) {
+      final long elapsed = (long) req.getRequestTimer().getTime();
+      if (elapsed >= slowUpdateThresholdMillis) {
+        log.warn("slow: " + getLogStringAndClearRspToLog());
+      }
+    }
+  }
+
+  private String getLogStringAndClearRspToLog() {
+    StringBuilder sb = new StringBuilder(rsp.getToLogAsString(req.getCore().getLogId()));
+
+    rsp.getToLog().clear();   // make it so SolrCore.exec won't log this again
+
+    // if id lists were truncated, show how many more there were
+    if (adds != null && numAdds > maxNumToLog) {
+      adds.add("... (" + numAdds + " adds)");
+    }
+    if (deletes != null && numDeletes > maxNumToLog) {
+      deletes.add("... (" + numDeletes + " deletes)");
+    }
+    final long elapsed = (long) req.getRequestTimer().getTime();
+
+    sb.append(toLog).append(" 0 ").append(elapsed);
+    return sb.toString();
   }
 }
 

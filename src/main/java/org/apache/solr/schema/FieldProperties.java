@@ -17,8 +17,8 @@
 
 package org.apache.solr.schema;
 
-import java.util.Map;
 import java.util.HashMap;
+import java.util.Map;
 
 /**
  *
@@ -52,19 +52,21 @@ public abstract class FieldProperties {
   protected final static int STORE_OFFSETS       = 0x00004000;
   protected final static int DOC_VALUES          = 0x00008000;
 
+  protected final static int STORE_TERMPAYLOADS  = 0x00010000;
+
   static final String[] propertyNames = {
           "indexed", "tokenized", "stored",
           "binary", "omitNorms", "omitTermFreqAndPositions",
           "termVectors", "termPositions", "termOffsets",
           "multiValued",
           "sortMissingFirst","sortMissingLast","required", "omitPositions",
-          "storeOffsetsWithPositions", "docValues"
+          "storeOffsetsWithPositions", "docValues", "termPayloads"
   };
 
-  static final Map<String,Integer> propertyMap = new HashMap<String,Integer>();
+  static final Map<String,Integer> propertyMap = new HashMap<>();
   static {
     for (String prop : propertyNames) {
-      propertyMap.put(prop, propertyNameToInt(prop));
+      propertyMap.put(prop, propertyNameToInt(prop, true));
     }
   }
 
@@ -74,13 +76,17 @@ public abstract class FieldProperties {
     return propertyNames[ Integer.numberOfTrailingZeros(property) ];
   }
 
-  static int propertyNameToInt(String name) {
+  static int propertyNameToInt(String name, boolean failOnError) {
     for (int i=0; i<propertyNames.length; i++) {
       if (propertyNames[i].equals(name)) {
         return 1 << i;
       }
     }
-    return 0;
+    if (failOnError && !"default".equals(name)) {
+      throw new IllegalArgumentException("Invalid field property: " + name);
+    } else {
+      return 0;
+    }
   }
 
 
@@ -105,16 +111,16 @@ public abstract class FieldProperties {
     return (bitfield & props) == 0;
   }
 
-  static int parseProperties(Map<String,String> properties, boolean which) {
+  static int parseProperties(Map<String,?> properties, boolean which, boolean failOnError) {
     int props = 0;
-    for (Map.Entry<String, String> entry : properties.entrySet()) {
-      String val = entry.getValue();
+    for (Map.Entry<String,?> entry : properties.entrySet()) {
+      Object val = entry.getValue();
       if(val == null) continue;
-      if (Boolean.parseBoolean(val) == which) {
-        props |= propertyNameToInt(entry.getKey());
+      boolean boolVal = val instanceof Boolean ? (Boolean)val : Boolean.parseBoolean(val.toString());
+      if (boolVal == which) {
+        props |= propertyNameToInt(entry.getKey(), failOnError);
       }
     }
     return props;
   }
-
 }

@@ -17,31 +17,44 @@
 
 package org.apache.solr.update;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.PrintStream;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.DelegatingAnalyzerWrapper;
 import org.apache.lucene.index.*;
+import org.apache.lucene.index.IndexWriter.IndexReaderWarmer;
+import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.Version;
-import org.apache.solr.common.SolrException;
-import org.apache.solr.common.SolrException.ErrorCode;
-import org.apache.solr.core.SolrConfig;
+import org.apache.solr.common.cloud.ZkNodeProps;
+import org.apache.solr.common.util.NamedList;
+import org.apache.solr.core.MapSerializable;
 import org.apache.solr.core.PluginInfo;
+import org.apache.solr.core.SolrConfig;
+import org.apache.solr.core.SolrCore;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.util.SolrPluginUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.List;
+import static org.apache.solr.core.Config.assertWarnOrFail;
 
 /**
  * This config object encapsulates IndexWriter config params,
  * defined in the &lt;indexConfig&gt; section of solrconfig.xml
  */
-public class SolrIndexConfig {
+public class SolrIndexConfig implements MapSerializable {
   public static final Logger log = LoggerFactory.getLogger(SolrIndexConfig.class);
   
   final String defaultMergePolicyClassName;
   public static final String DEFAULT_MERGE_SCHEDULER_CLASSNAME = ConcurrentMergeScheduler.class.getName();
   public final Version luceneVersion;
-  
-  public final boolean useCompoundFile;
+
+  private boolean effectiveUseCompoundFileSetting;
+
   public final int maxBufferedDocs;
   public final int maxMergeDocs;
   public final int maxIndexingThreads;
@@ -53,9 +66,10 @@ public class SolrIndexConfig {
   public final String lockType;
   public final PluginInfo mergePolicyInfo;
   public final PluginInfo mergeSchedulerInfo;
-  public final int termIndexInterval;
   
-  public String infoStreamFile = null;
+  public final PluginInfo mergedSegmentWarmerInfo;
+  
+  public InfoStream infoStream = InfoStream.NO_OUTPUT;
 
   // Available lock types
   public final static String LOCK_TYPE_SIMPLE = "simple";
@@ -69,7 +83,7 @@ public class SolrIndexConfig {
   @SuppressWarnings("deprecation")
   private SolrIndexConfig(SolrConfig solrConfig) {
     luceneVersion = solrConfig.luceneMatchVersion;
-    useCompoundFile = false;
+    effectiveUseCompoundFileSetting = false;
     maxBufferedDocs = -1;
     maxMergeDocs = -1;
     maxIndexingThreads = IndexWriterConfig.DEFAULT_MAX_THREAD_STATES;
@@ -77,10 +91,10 @@ public class SolrIndexConfig {
     ramBufferSizeMB = 100;
     writeLockTimeout = -1;
     lockType = LOCK_TYPE_NATIVE;
-    termIndexInterval = IndexWriterConfig.DEFAULT_TERM_INDEX_INTERVAL;
     mergePolicyInfo = null;
     mergeSchedulerInfo = null;
     defaultMergePolicyClassName = TieredMergePolicy.class.getName();
+    mergedSegmentWarmerInfo = null;
   }
   
   /**
@@ -100,22 +114,26 @@ public class SolrIndexConfig {
       def = new SolrIndexConfig(solrConfig);
     }
 
+    // sanity check: this will throw an error for us if there is more then one
+    // config section
+    Object unused = solrConfig.getNode(prefix, false);
+
     luceneVersion = solrConfig.luceneMatchVersion;
 
     // Assert that end-of-life parameters or syntax is not in our config.
-    // Warn for luceneMatchVersion's before LUCENE_36, fail fast above
+    // Warn for luceneMatchVersion's before LUCENE_3_6, fail fast above
     assertWarnOrFail("The <mergeScheduler>myclass</mergeScheduler> syntax is no longer supported in solrconfig.xml. Please use syntax <mergeScheduler class=\"myclass\"/> instead.",
-        !((solrConfig.get(prefix+"/mergeScheduler/text()",null) != null) && (solrConfig.get(prefix+"/mergeScheduler/@class",null) == null)),
+        !((solrConfig.getNode(prefix + "/mergeScheduler", false) != null) && (solrConfig.get(prefix + "/mergeScheduler/@class", null) == null)),
         true);
     assertWarnOrFail("The <mergePolicy>myclass</mergePolicy> syntax is no longer supported in solrconfig.xml. Please use syntax <mergePolicy class=\"myclass\"/> instead.",
-        !((solrConfig.get(prefix+"/mergePolicy/text()",null) != null) && (solrConfig.get(prefix+"/mergePolicy/@class",null) == null)),
+        !((solrConfig.getNode(prefix + "/mergePolicy", false) != null) && (solrConfig.get(prefix + "/mergePolicy/@class", null) == null)),
         true);
     assertWarnOrFail("The <luceneAutoCommit>true|false</luceneAutoCommit> parameter is no longer valid in solrconfig.xml.",
-        solrConfig.get(prefix+"/luceneAutoCommit", null) == null,
+        solrConfig.get(prefix + "/luceneAutoCommit", null) == null,
         true);
 
     defaultMergePolicyClassName = def.defaultMergePolicyClassName;
-    useCompoundFile=solrConfig.getBool(prefix+"/useCompoundFile", def.useCompoundFile);
+    effectiveUseCompoundFileSetting = solrConfig.getBool(prefix+"/useCompoundFile", def.getUseCompoundFile());
     maxBufferedDocs=solrConfig.getInt(prefix+"/maxBufferedDocs",def.maxBufferedDocs);
     maxMergeDocs=solrConfig.getInt(prefix+"/maxMergeDocs",def.maxMergeDocs);
     maxIndexingThreads=solrConfig.getInt(prefix+"/maxIndexingThreads",def.maxIndexingThreads);
@@ -128,28 +146,39 @@ public class SolrIndexConfig {
     mergeSchedulerInfo = getPluginInfo(prefix + "/mergeScheduler", solrConfig, def.mergeSchedulerInfo);
     mergePolicyInfo = getPluginInfo(prefix + "/mergePolicy", solrConfig, def.mergePolicyInfo);
     
-    termIndexInterval = solrConfig.getInt(prefix + "/termIndexInterval", def.termIndexInterval);
-    
+    String val = solrConfig.get(prefix + "/termIndexInterval", null);
+    if (val != null) {
+      throw new IllegalArgumentException("Illegal parameter 'termIndexInterval'");
+    }
+
     boolean infoStreamEnabled = solrConfig.getBool(prefix + "/infoStream", false);
     if(infoStreamEnabled) {
-      infoStreamFile= solrConfig.get(prefix + "/infoStream/@file", null);
-      log.info("IndexWriter infoStream debug log is enabled: " + infoStreamFile);
+      String infoStreamFile = solrConfig.get(prefix + "/infoStream/@file", null);
+      if (infoStreamFile == null) {
+        log.info("IndexWriter infoStream solr logging is enabled");
+        infoStream = new LoggingInfoStream();
+      } else {
+        throw new IllegalArgumentException("Remove @file from <infoStream> to output messages to solr's logfile");
+      }
     }
-  }
+    mergedSegmentWarmerInfo = getPluginInfo(prefix + "/mergedSegmentWarmer", solrConfig, def.mergedSegmentWarmerInfo);
 
-  /*
-   * Assert that assertCondition is true.
-   * If not, prints reason as log warning.
-   * If failCondition is true, then throw exception instead of warning 
-   */
-  private void assertWarnOrFail(String reason, boolean assertCondition, boolean failCondition) {
-    if(assertCondition) {
-      return;
-    } else if(failCondition) {
-      throw new SolrException(ErrorCode.FORBIDDEN, reason);
-    } else {
-      log.warn(reason);
-    }
+    assertWarnOrFail("Begining with Solr 5.0, <checkIntegrityAtMerge> option is no longer supported and should be removed from solrconfig.xml (these integrity checks are now automatic)",
+        (null == solrConfig.getNode(prefix + "/checkIntegrityAtMerge", false)),
+        false);
+  }
+  @Override
+  public Map<String, Object> toMap() {
+    Map<String, Object> m = ZkNodeProps.makeMap("maxBufferedDocs", maxBufferedDocs,
+        "maxMergeDocs", maxMergeDocs,
+        "maxIndexingThreads", maxIndexingThreads,
+        "mergeFactor", mergeFactor,
+        "ramBufferSizeMB", ramBufferSizeMB,
+        "writeLockTimeout", writeLockTimeout,
+        "lockType", lockType);
+    if(mergeSchedulerInfo != null) m.put("mergeScheduler",mergeSchedulerInfo.toMap());
+    if(mergePolicyInfo != null) m.put("mergeScheduler",mergePolicyInfo.toMap());
+    return m;
   }
 
   private PluginInfo getPluginInfo(String path, SolrConfig solrConfig, PluginInfo def)  {
@@ -157,20 +186,28 @@ public class SolrIndexConfig {
     return l.isEmpty() ? def : l.get(0);
   }
 
-  public IndexWriterConfig toIndexWriterConfig(IndexSchema schema) {
-    // so that we can update the analyzer on core reload, we pass null
-    // for the default analyzer, and explicitly pass an analyzer on 
-    // appropriate calls to IndexWriter
-    
-    IndexWriterConfig iwc = new IndexWriterConfig(luceneVersion, null);
+  private static class DelayedSchemaAnalyzer extends DelegatingAnalyzerWrapper {
+    private final SolrCore core;
+
+    public DelayedSchemaAnalyzer(SolrCore core) {
+      super(PER_FIELD_REUSE_STRATEGY);
+      this.core = core;
+    }
+
+    @Override
+    protected Analyzer getWrappedAnalyzer(String fieldName) {
+      return core.getLatestSchema().getIndexAnalyzer();
+    }
+  }
+
+  public IndexWriterConfig toIndexWriterConfig(SolrCore core) {
+    IndexSchema schema = core.getLatestSchema();
+    IndexWriterConfig iwc = new IndexWriterConfig(new DelayedSchemaAnalyzer(core));
     if (maxBufferedDocs != -1)
       iwc.setMaxBufferedDocs(maxBufferedDocs);
 
     if (ramBufferSizeMB != -1)
       iwc.setRAMBufferSizeMB(ramBufferSizeMB);
-
-    if (termIndexInterval != -1)
-      iwc.setTermIndexInterval(termIndexInterval);
 
     if (writeLockTimeout != -1)
       iwc.setWriteLockTimeout(writeLockTimeout);
@@ -178,14 +215,38 @@ public class SolrIndexConfig {
     iwc.setSimilarity(schema.getSimilarity());
     iwc.setMergePolicy(buildMergePolicy(schema));
     iwc.setMergeScheduler(buildMergeScheduler(schema));
+    iwc.setInfoStream(infoStream);
+
+    // do this after buildMergePolicy since the backcompat logic 
+    // there may modify the effective useCompoundFile
+    iwc.setUseCompoundFile(getUseCompoundFile());
 
     if (maxIndexingThreads != -1) {
       iwc.setMaxThreadStates(maxIndexingThreads);
+    }
+    
+    if (mergedSegmentWarmerInfo != null) {
+      // TODO: add infostream -> normal logging system (there is an issue somewhere)
+      IndexReaderWarmer warmer = schema.getResourceLoader().newInstance(mergedSegmentWarmerInfo.className, 
+                                                                        IndexReaderWarmer.class,
+                                                                        null,
+                                                                        new Class[] { InfoStream.class },
+                                                                        new Object[] { iwc.getInfoStream() });
+      iwc.setMergedSegmentWarmer(warmer);
     }
 
     return iwc;
   }
 
+  /**
+   * Builds a MergePolicy, may also modify the value returned by
+   * getUseCompoundFile() for use by the IndexWriterConfig if 
+   * "useCompoundFile" is specified as an init arg for 
+   * an out of the box MergePolicy that no longer supports it
+   *
+   * @see #fixUseCFMergePolicyInitArg
+   * @see #getUseCompoundFile
+   */
   private MergePolicy buildMergePolicy(IndexSchema schema) {
     String mpClassName = mergePolicyInfo == null ? defaultMergePolicyClassName : mergePolicyInfo.className;
 
@@ -193,25 +254,31 @@ public class SolrIndexConfig {
 
     if (policy instanceof LogMergePolicy) {
       LogMergePolicy logMergePolicy = (LogMergePolicy) policy;
+      fixUseCFMergePolicyInitArg(LogMergePolicy.class);
 
       if (maxMergeDocs != -1)
         logMergePolicy.setMaxMergeDocs(maxMergeDocs);
 
-      logMergePolicy.setUseCompoundFile(useCompoundFile);
+      logMergePolicy.setNoCFSRatio(getUseCompoundFile() ? 1.0 : 0.0);
 
       if (mergeFactor != -1)
         logMergePolicy.setMergeFactor(mergeFactor);
+
+
     } else if (policy instanceof TieredMergePolicy) {
       TieredMergePolicy tieredMergePolicy = (TieredMergePolicy) policy;
+      fixUseCFMergePolicyInitArg(TieredMergePolicy.class);
       
-      tieredMergePolicy.setUseCompoundFile(useCompoundFile);
+      tieredMergePolicy.setNoCFSRatio(getUseCompoundFile() ? 1.0 : 0.0);
       
       if (mergeFactor != -1) {
         tieredMergePolicy.setMaxMergeAtOnce(mergeFactor);
         tieredMergePolicy.setSegmentsPerTier(mergeFactor);
       }
-    } else {
-      log.warn("Use of compound file format or mergefactor cannot be configured if merge policy is not an instance of LogMergePolicy or TieredMergePolicy. The configured policy's defaults will be used.");
+
+
+    } else if (mergeFactor != -1) {
+      log.warn("Use of <mergeFactor> cannot be configured if merge policy is not an instance of LogMergePolicy or TieredMergePolicy. The configured policy's defaults will be used.");
     }
 
     if (mergePolicyInfo != null)
@@ -224,9 +291,58 @@ public class SolrIndexConfig {
     String msClassName = mergeSchedulerInfo == null ? SolrIndexConfig.DEFAULT_MERGE_SCHEDULER_CLASSNAME : mergeSchedulerInfo.className;
     MergeScheduler scheduler = schema.getResourceLoader().newInstance(msClassName, MergeScheduler.class);
 
-    if (mergeSchedulerInfo != null)
-      SolrPluginUtils.invokeSetters(scheduler, mergeSchedulerInfo.initArgs);
+    if (mergeSchedulerInfo != null) {
+      // LUCENE-5080: these two setters are removed, so we have to invoke setMaxMergesAndThreads
+      // if someone has them configured.
+      if (scheduler instanceof ConcurrentMergeScheduler) {
+        NamedList args = mergeSchedulerInfo.initArgs.clone();
+        Integer maxMergeCount = (Integer) args.remove("maxMergeCount");
+        if (maxMergeCount == null) {
+          maxMergeCount = ((ConcurrentMergeScheduler) scheduler).getMaxMergeCount();
+        }
+        Integer maxThreadCount = (Integer) args.remove("maxThreadCount");
+        if (maxThreadCount == null) {
+          maxThreadCount = ((ConcurrentMergeScheduler) scheduler).getMaxThreadCount();
+        }
+        ((ConcurrentMergeScheduler)scheduler).setMaxMergesAndThreads(maxMergeCount, maxThreadCount);
+        SolrPluginUtils.invokeSetters(scheduler, args);
+      } else {
+        SolrPluginUtils.invokeSetters(scheduler, mergeSchedulerInfo.initArgs);
+      }
+    }
 
     return scheduler;
+  }
+
+  public boolean getUseCompoundFile() {
+    return effectiveUseCompoundFileSetting;
+  }
+
+  /**
+   * Lucene 4.4 removed the setUseCompoundFile(boolean) method from the two 
+   * conrete MergePolicies provided with Lucene/Solr and added it to the 
+   * IndexWriterConfig.  
+   * In the event that users have a value explicitly configured for this 
+   * setter in their MergePolicy init args, we remove it from the MergePolicy 
+   * init args, update the 'effective' useCompoundFile setting used by the 
+   * IndexWriterConfig, and warn about discontinuing to use this init arg.
+   * 
+   * @see #getUseCompoundFile
+   */
+  private void fixUseCFMergePolicyInitArg(Class c) {
+
+    if (null == mergePolicyInfo || null == mergePolicyInfo.initArgs) return;
+
+    Object useCFSArg = mergePolicyInfo.initArgs.remove("useCompoundFile");
+    if (null != useCFSArg) {
+      log.warn("Ignoring 'useCompoundFile' specified as an init arg for the <mergePolicy> since it is no directly longer supported by " + c.getSimpleName());
+      if (useCFSArg instanceof Boolean) {
+        boolean cfs = ((Boolean)useCFSArg).booleanValue();
+        log.warn("Please update your config to specify <useCompoundFile>"+cfs+"</useCompoundFile> directly in your <indexConfig> settings.");
+        effectiveUseCompoundFileSetting = cfs;
+      } else {
+        log.error("MergePolicy's 'useCompoundFile' init arg is not a boolean, can not apply back compat logic to apply to the IndexWriterConfig: " + useCFSArg.toString());
+      }
+    }
   }
 }

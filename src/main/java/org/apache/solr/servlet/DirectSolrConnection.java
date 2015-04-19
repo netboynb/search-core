@@ -69,7 +69,7 @@ public class DirectSolrConnection
   /**
    * For example:
    * 
-   * String json = solr.request( "/select?qt=dismax&wt=json&q=...", null );
+   * String json = solr.request( "/select?qt=dismax&amp;wt=json&amp;q=...", null );
    * String xml = solr.request( "/update", "&lt;add&gt;&lt;doc&gt;&lt;field ..." );
    */
   public String request( String pathAndParams, String body ) throws Exception
@@ -118,7 +118,7 @@ public class DirectSolrConnection
       params = new MapSolrParams( new HashMap<String, String>() );
 
     // Make a stream for the 'body' content
-    List<ContentStream> streams = new ArrayList<ContentStream>( 1 );
+    List<ContentStream> streams = new ArrayList<>( 1 );
     if( body != null && body.length() > 0 ) {
       streams.add( new ContentStreamBase.StringStream( body ) );
     }

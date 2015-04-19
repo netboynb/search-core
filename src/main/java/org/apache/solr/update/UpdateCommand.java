@@ -17,7 +17,6 @@
 
 package org.apache.solr.update;
 
-import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.request.SolrQueryRequest;
 
 
@@ -28,6 +27,7 @@ import org.apache.solr.request.SolrQueryRequest;
 public abstract class UpdateCommand implements Cloneable {
   protected SolrQueryRequest req;
   protected long version;
+  protected String route;
   protected int flags;
 
   public static int BUFFERING = 0x00000001;    // update command is being buffered.
@@ -64,6 +64,14 @@ public abstract class UpdateCommand implements Cloneable {
   }
   public void setVersion(long version) {
     this.version = version;
+  }
+
+  public String getRoute() {
+    return route;
+  }
+
+  public void setRoute (String route) {
+    this.route = route;
   }
 
   public void setFlags(int flags) {

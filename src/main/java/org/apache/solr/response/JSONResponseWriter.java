@@ -35,6 +35,7 @@ import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.schema.SchemaField;
 import org.apache.solr.search.ReturnFields;
+import org.apache.solr.search.SolrReturnFields;
 
 /**
  *
@@ -124,7 +125,7 @@ class JSONWriter extends TextResponseWriter {
     // Disad: this is ambiguous with a real single value that happens to be an array
     //
     // Both of these mappings have ambiguities.
-    HashMap<String,Integer> repeats = new HashMap<String,Integer>(4);
+    HashMap<String,Integer> repeats = new HashMap<>(4);
 
     boolean first=true;
     for (int i=0; i<sz; i++) {
@@ -314,7 +315,7 @@ class JSONWriter extends TextResponseWriter {
     final ArrayList<IndexableField> fields;
     MultiValueField(SchemaField sfield, IndexableField firstVal) {
       this.sfield = sfield;
-      this.fields = new ArrayList<IndexableField>(4);
+      this.fields = new ArrayList<>(4);
       this.fields.add(firstVal);
     }
   }
@@ -354,6 +355,21 @@ class JSONWriter extends TextResponseWriter {
       } else {
         writeVal(fname, val);
       }
+    }
+
+    if(doc.hasChildDocuments()) {
+      if(first == false) {
+        writeMapSeparator();
+        indent();
+      }
+      writeKey("_childDocuments_", true);
+      writeArrayOpener(doc.getChildDocumentCount());
+      List<SolrDocument> childDocs = doc.getChildDocuments();
+      ReturnFields rf = new SolrReturnFields();
+      for(int i=0; i<childDocs.size(); i++) {
+        writeSolrDocument(null, childDocs.get(i), rf, i);
+      }
+      writeArrayCloser();
     }
     
     decLevel();

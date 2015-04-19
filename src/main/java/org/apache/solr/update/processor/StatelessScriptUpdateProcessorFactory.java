@@ -27,7 +27,6 @@ import org.apache.solr.request.LocalSolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.update.*;
 import org.apache.solr.util.plugin.SolrCoreAware;
-
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.FilenameUtils;
@@ -41,6 +40,7 @@ import javax.script.ScriptException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.LinkedHashSet;
 import java.util.ArrayList;
@@ -90,7 +90,6 @@ import org.slf4j.LoggerFactory;
  *  <li>logger - A {@link Logger} that can be used for logging purposes in the script</li>
  *  <li>params - The "params" init argument in the factory configuration (if any)</li>
  * </ul>
- * </p>
  * <p>
  * Internally this update processor uses JDK 6 scripting engine support, 
  * and any {@link Invocable} implementations of <code>ScriptEngine</code> 
@@ -173,13 +172,13 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
   @Override
   public void init(NamedList args) {
     Collection<String> scripts = 
-      FieldMutatingUpdateProcessorFactory.oneOrMany(args, SCRIPT_ARG);
+      args.removeConfigArgs(SCRIPT_ARG);
     if (scripts.isEmpty()) {
       throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, 
                               "StatelessScriptUpdateProcessorFactory must be " +
                               "initialized with at least one " + SCRIPT_ARG);
     }
-    scriptFiles = new ArrayList<ScriptFile>();
+    scriptFiles = new ArrayList<>();
     for (String script : scripts) {
       scriptFiles.add(new ScriptFile(script));
     }
@@ -251,7 +250,7 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
                                        SolrQueryResponse rsp) 
     throws SolrException {
     
-    List<EngineInfo> scriptEngines = new ArrayList<EngineInfo>();
+    List<EngineInfo> scriptEngines = new ArrayList<>();
 
     ScriptEngineManager scriptEngineManager 
       = new ScriptEngineManager(resourceLoader.getClassLoader());
@@ -338,7 +337,7 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
       List<ScriptEngineFactory> factories = mgr.getEngineFactories();
       if (null == factories) return result;
 
-      Set<String> engines = new LinkedHashSet<String>(factories.size());
+      Set<String> engines = new LinkedHashSet<>(factories.size());
       for (ScriptEngineFactory f : factories) {
         if (ext) {
           engines.addAll(f.getExtensions());
@@ -429,13 +428,7 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
             }
           }
 
-        } catch (ScriptException e) {
-          throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, 
-                                  "Unable to invoke function " + name + 
-                                  " in script: " + 
-                                  engine.getScriptFile().getFileName() + 
-                                  ": " + e.getMessage(), e);
-        } catch (NoSuchMethodException e) {
+        } catch (ScriptException | NoSuchMethodException e) {
           throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, 
                                   "Unable to invoke function " + name + 
                                   " in script: " + 
@@ -494,7 +487,7 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
     public Reader openReader(SolrResourceLoader resourceLoader) throws IOException {
       InputStream input = resourceLoader.openResource(fileName);
       return org.apache.lucene.util.IOUtils.getDecodingReader
-        (input, org.apache.lucene.util.IOUtils.CHARSET_UTF_8);
+        (input, StandardCharsets.UTF_8);
     }
   }
 }
