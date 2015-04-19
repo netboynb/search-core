@@ -39,17 +39,14 @@ import org.slf4j.LoggerFactory;
 public class FSHDFSUtils {
   public static Logger log = LoggerFactory.getLogger(FSHDFSUtils.class);
 
-  public interface CallerInfo {
-    boolean isCallerClosed();
-  }
 
   /**
    * Recover the lease from HDFS, retrying multiple times.
    */
-  public static void recoverFileLease(final FileSystem fs, final Path p, Configuration conf, CallerInfo callerInfo) throws IOException {
+  public static void recoverFileLease(final FileSystem fs, final Path p, Configuration conf) throws IOException {
     // lease recovery not needed for local file system case.
     if (!(fs instanceof DistributedFileSystem)) return;
-    recoverDFSFileLease((DistributedFileSystem)fs, p, conf, callerInfo);
+    recoverDFSFileLease((DistributedFileSystem)fs, p, conf);
   }
 
   /*
@@ -78,7 +75,7 @@ public class FSHDFSUtils {
    *
    * If HDFS-4525 is available, call it every second and we might be able to exit early.
    */
-  static boolean recoverDFSFileLease(final DistributedFileSystem dfs, final Path p, final Configuration conf, CallerInfo callerInfo)
+  static boolean recoverDFSFileLease(final DistributedFileSystem dfs, final Path p, final Configuration conf)
   throws IOException {
     log.info("Recovering lease on dfs file " + p);
     long startWaiting = System.nanoTime();
@@ -91,28 +88,17 @@ public class FSHDFSUtils {
     // This should be set to how long it'll take for us to timeout against primary datanode if it
     // is dead.  We set it to 61 seconds, 1 second than the default READ_TIMEOUT in HDFS, the
     // default value for DFS_CLIENT_SOCKET_TIMEOUT_KEY.
-    long subsequentPause = TimeUnit.NANOSECONDS.convert(conf.getInt("solr.hdfs.lease.recovery.dfs.timeout", 61 * 1000), TimeUnit.MILLISECONDS);
+    long subsequentPause = conf.getInt("solr.hdfs.lease.recovery.dfs.timeout", 61 * 1000);
     
     Method isFileClosedMeth = null;
     // whether we need to look for isFileClosed method
-    
-    try {
-      isFileClosedMeth = dfs.getClass().getMethod("isFileClosed",
-          new Class[] {Path.class});
-    } catch (NoSuchMethodException nsme) {
-      log.debug("isFileClosed not available");
-    }
-    
-    if (isFileClosedMeth != null && isFileClosed(dfs, isFileClosedMeth, p)) {
-      return true;
-    }
-    
+    boolean findIsFileClosedMeth = true;
     boolean recovered = false;
     // We break the loop if we succeed the lease recovery, timeout, or we throw an exception.
     for (int nbAttempt = 0; !recovered; nbAttempt++) {
       recovered = recoverLease(dfs, nbAttempt, p, startWaiting);
       if (recovered) break;
-      if (checkIfTimedout(conf, recoveryTimeout, nbAttempt, p, startWaiting) || callerInfo.isCallerClosed()) break;
+      if (checkIfTimedout(conf, recoveryTimeout, nbAttempt, p, startWaiting)) break;
       try {
         // On the first time through wait the short 'firstPause'.
         if (nbAttempt == 0) {
@@ -121,9 +107,19 @@ public class FSHDFSUtils {
           // Cycle here until subsequentPause elapses.  While spinning, check isFileClosed if
           // available (should be in hadoop 2.0.5... not in hadoop 1 though.
           long localStartWaiting = System.nanoTime();
-          while ((System.nanoTime() - localStartWaiting) < subsequentPause && !callerInfo.isCallerClosed()) {
+          while ((System.nanoTime() - localStartWaiting) <
+              subsequentPause) {
             Thread.sleep(conf.getInt("solr.hdfs.lease.recovery.pause", 1000));
-
+            if (findIsFileClosedMeth) {
+              try {
+                isFileClosedMeth = dfs.getClass().getMethod("isFileClosed",
+                  new Class[]{ Path.class });
+              } catch (NoSuchMethodException nsme) {
+                log.debug("isFileClosed not available");
+              } finally {
+                findIsFileClosedMeth = false;
+              }
+            }
             if (isFileClosedMeth != null && isFileClosed(dfs, isFileClosedMeth, p)) {
               recovered = true;
               break;

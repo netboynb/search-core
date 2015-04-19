@@ -42,7 +42,6 @@ import org.slf4j.LoggerFactory;
 import static org.apache.solr.cloud.OverseerCollectionProcessor.COLL_PROP_PREFIX;
 import static org.apache.solr.cloud.overseer.CollectionMutator.checkCollectionKeyExistence;
 import static org.apache.solr.cloud.overseer.CollectionMutator.checkKeyExistence;
-import static org.apache.solr.common.params.CommonParams.NAME;
 
 public class ReplicaMutator {
   private static Logger log = LoggerFactory.getLogger(ReplicaMutator.class);
@@ -216,7 +215,7 @@ public class ReplicaMutator {
     boolean collectionExists = prevState.hasCollection(cName);
     if (!collectionExists && numShards != null) {
       ClusterStateMutator.getShardNames(numShards, shardNames);
-      Map<String, Object> createMsg = ZkNodeProps.makeMap(NAME, cName);
+      Map<String, Object> createMsg = ZkNodeProps.makeMap("name", cName);
       createMsg.putAll(message.getProperties());
       writeCommand = new ClusterStateMutator(zkStateReader).createCollection(prevState, new ZkNodeProps(createMsg));
       DocCollection collection = writeCommand.collection;
@@ -314,7 +313,7 @@ public class ReplicaMutator {
     DocCollection collection = prevState.getCollectionOrNull(collectionName);
     if (slice != null) {
       collection = prevState.getCollection(collectionName);
-      collection = checkAndCompleteShardSplit(prevState, collection, coreNodeName, sliceName, replica);
+      collection = checkAndCompleteShardSplit(prevState, collection, coreNodeName, sliceName, replicaProps);
       // get the current slice again because it may have been updated due to checkAndCompleteShardSplit method
       slice = collection.getSlice(sliceName);
       sliceProps = slice.getProperties();
@@ -323,7 +322,7 @@ public class ReplicaMutator {
       replicas = new HashMap<>(1);
       sliceProps = new HashMap<>();
       sliceProps.put(Slice.RANGE, shardRange);
-      sliceProps.put(ZkStateReader.STATE_PROP, shardState);
+      sliceProps.put(Slice.STATE, shardState);
       sliceProps.put(Slice.PARENT, shardParent);
     }
 
@@ -355,19 +354,20 @@ public class ReplicaMutator {
     return updateState(clusterState, message);
   }
 
-  private DocCollection checkAndCompleteShardSplit(ClusterState prevState, DocCollection collection, String coreNodeName, String sliceName, Replica replica) {
+  private DocCollection checkAndCompleteShardSplit(ClusterState prevState, DocCollection collection, String coreNodeName, String sliceName, Map<String, Object> replicaProps) {
     Slice slice = collection.getSlice(sliceName);
     Map<String, Object> sliceProps = slice.getProperties();
-    if (slice.getState() == Slice.State.RECOVERY) {
+    String sliceState = slice.getState();
+    if (Slice.RECOVERY.equals(sliceState)) {
       log.info("Shard: {} is in recovery state", sliceName);
       // is this replica active?
-      if (replica.getState() == Replica.State.ACTIVE) {
+      if (ZkStateReader.ACTIVE.equals(replicaProps.get(ZkStateReader.STATE_PROP))) {
         log.info("Shard: {} is in recovery state and coreNodeName: {} is active", sliceName, coreNodeName);
         // are all other replicas also active?
         boolean allActive = true;
         for (Map.Entry<String, Replica> entry : slice.getReplicasMap().entrySet()) {
           if (coreNodeName.equals(entry.getKey())) continue;
-          if (entry.getValue().getState() != Replica.State.ACTIVE) {
+          if (!Slice.ACTIVE.equals(entry.getValue().getStr(Slice.STATE))) {
             allActive = false;
             break;
           }
@@ -382,12 +382,12 @@ public class ReplicaMutator {
             if (sliceName.equals(entry.getKey()))
               continue;
             Slice otherSlice = entry.getValue();
-            if (otherSlice.getState() == Slice.State.RECOVERY) {
+            if (Slice.RECOVERY.equals(otherSlice.getState())) {
               if (slice.getParent() != null && slice.getParent().equals(otherSlice.getParent())) {
                 log.info("Shard: {} - Fellow sub-shard: {} found", sliceName, otherSlice.getName());
                 // this is a fellow sub shard so check if all replicas are active
                 for (Map.Entry<String, Replica> sliceEntry : otherSlice.getReplicasMap().entrySet()) {
-                  if (sliceEntry.getValue().getState() != Replica.State.ACTIVE) {
+                  if (!ZkStateReader.ACTIVE.equals(sliceEntry.getValue().getStr(ZkStateReader.STATE_PROP))) {
                     allActive = false;
                     break outer;
                   }
@@ -404,10 +404,10 @@ public class ReplicaMutator {
 
             Map<String, Object> propMap = new HashMap<>();
             propMap.put(Overseer.QUEUE_OPERATION, "updateshardstate");
-            propMap.put(parentSliceName, Slice.State.INACTIVE.toString());
-            propMap.put(sliceName, Slice.State.ACTIVE.toString());
+            propMap.put(parentSliceName, Slice.INACTIVE);
+            propMap.put(sliceName, Slice.ACTIVE);
             for (Slice subShardSlice : subShardSlices) {
-              propMap.put(subShardSlice.getName(), Slice.State.ACTIVE.toString());
+              propMap.put(subShardSlice.getName(), Slice.ACTIVE);
             }
             propMap.put(ZkStateReader.COLLECTION_PROP, collection.getName());
             ZkNodeProps m = new ZkNodeProps(propMap);

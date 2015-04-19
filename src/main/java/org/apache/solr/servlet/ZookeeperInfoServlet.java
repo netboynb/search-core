@@ -17,9 +17,6 @@
 
 package org.apache.solr.servlet;
 
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
@@ -35,18 +32,20 @@ import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+
+import javax.servlet.ServletException;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 
 import org.apache.lucene.util.BytesRef;
 import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.cloud.OnReconnect;
-import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.SolrZkClient;
 import org.apache.solr.common.cloud.ZkNodeProps;
-import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.util.FastWriter;
@@ -60,7 +59,6 @@ import org.noggit.ObjectBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.apache.solr.common.params.CommonParams.PATH;
 
 
 /**
@@ -163,17 +161,17 @@ public final class ZookeeperInfoServlet extends BaseSolrServlet {
         Map<String,Object> replicas = (Map<String,Object>)shard.get("replicas");
         for (String replicaId : replicas.keySet()) {
           Map<String,Object> replicaState = (Map<String,Object>)replicas.get(replicaId);
-          Replica.State coreState = Replica.State.getState((String)replicaState.get(ZkStateReader.STATE_PROP));
+          String coreState = (String)replicaState.get("state");
           String nodeName = (String)replicaState.get("node_name");
           
           // state can lie to you if the node is offline, so need to reconcile with live_nodes too
           if (!liveNodes.contains(nodeName))
-            coreState = Replica.State.DOWN; // not on a live node, so must be down
+            coreState = "down"; // not on a live node, so must be down
           
-          if (coreState == Replica.State.ACTIVE) {
+          if ("active".equals(coreState)) {
             hasActive = true; // assumed no replicas active and found one that is for this shard
           } else {
-            if (coreState == Replica.State.RECOVERING) {
+            if ("recovering".equals(coreState)) {
               replicaInRecovery = true;
             }
             isHealthy = false; // assumed healthy and found one replica that is not
@@ -190,7 +188,7 @@ public final class ZookeeperInfoServlet extends BaseSolrServlet {
         return !hasDownedShard && !isHealthy; // means no shards offline but not 100% healthy either
       } else if ("downed_shard".equals(filter)) {
         return hasDownedShard;
-      } else if (Replica.State.getState(filter) == Replica.State.RECOVERING) {
+      } else if ("recovering".equals(filter)) {
         return !isHealthy && replicaInRecovery;
       }
       
@@ -355,7 +353,7 @@ public final class ZookeeperInfoServlet extends BaseSolrServlet {
       return;
     }
 
-    String path = params.get(PATH);
+    String path = params.get("path");
     String addr = params.get("addr");
 
     if (addr != null && addr.length() == 0) {
@@ -786,7 +784,7 @@ public final class ZookeeperInfoServlet extends BaseSolrServlet {
         json.writeNameSeparator();
         json.startObject();
 
-        writeKeyValue(json, PATH, path, true);
+        writeKeyValue(json, "path", path, true);
 
         json.writeValueSeparator();
         json.writeString("prop");

@@ -17,21 +17,16 @@
 
 package org.apache.solr.search;
 
-import java.util.Collection;
-import java.util.Collections;
-
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BitsFilteredDocIdSet;
 import org.apache.lucene.search.DocIdSet;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Filter;
-import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.BitDocIdSet;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
-import org.apache.lucene.util.RamUsageEstimator;
 
 /**
  * <code>BitDocSet</code> represents an unordered set of Lucene Document Ids
@@ -40,10 +35,6 @@ import org.apache.lucene.util.RamUsageEstimator;
  * @since solr 0.9
  */
 public class BitDocSet extends DocSetBase {
-  private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(BitDocSet.class)
-      + RamUsageEstimator.shallowSizeOfInstance(FixedBitSet.class)
-      + RamUsageEstimator.NUM_BYTES_ARRAY_HEADER;  // for the array object inside the FixedBitSet. long[] array won't change alignment, so no need to calculate it.
-
   final FixedBitSet bits;
   int size;    // number of docs in the set (cached for perf)
 
@@ -69,7 +60,7 @@ public class BitDocSet extends DocSetBase {
     this.size = size;
   }
 
-  /* DocIterator using nextSetBit()
+  /*** DocIterator using nextSetBit()
   public DocIterator iterator() {
     return new DocIterator() {
       int pos=bits.nextSetBit(0);
@@ -167,7 +158,7 @@ public class BitDocSet extends DocSetBase {
   }
 
   /**
-   * Returns true of the doc exists in the set. Should only be called when doc &lt;
+   * Returns true of the doc exists in the set. Should only be called when doc <
    * {@link FixedBitSet#length()}.
    */
   @Override
@@ -200,7 +191,7 @@ public class BitDocSet extends DocSetBase {
     if (other instanceof BitDocSet) {
       // if we don't know our current size, this is faster than
       // size + other.size - intersection_size
-      return (int) FixedBitSet.unionCount(this.bits, ((BitDocSet) other).bits);
+      return (int) FixedBitSet.unionCount(this.bits, ((BitDocSet)other).bits);
     } else {
       // they had better not call us back!
       return other.unionSize(this);
@@ -262,6 +253,11 @@ public class BitDocSet extends DocSetBase {
     return new BitDocSet(newbits);
   }
   
+  @Override
+  public long memSize() {
+    return (bits.getBits().length << 3) + 16;
+  }
+
   @Override
   protected BitDocSet clone() {
     return new BitDocSet(bits.clone(), size);
@@ -362,20 +358,6 @@ public class BitDocSet extends DocSetBase {
 
         }, acceptDocs2);
       }
-      @Override
-      public String toString(String field) {
-        return "BitSetDocTopFilter";
-      }
     };
-  }
-
-  @Override
-  public long ramBytesUsed() {
-    return BASE_RAM_BYTES_USED + ((long)bits.getBits().length << 3);
-  }
-
-  @Override
-  public Collection<Accountable> getChildResources() {
-    return Collections.emptyList();
   }
 }

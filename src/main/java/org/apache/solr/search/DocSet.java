@@ -17,10 +17,7 @@
 
 package org.apache.solr.search;
 
-import java.io.Closeable;
-
 import org.apache.lucene.search.Filter;
-import org.apache.lucene.util.Accountable;
 import org.apache.solr.common.SolrException;
 
 /**
@@ -33,7 +30,7 @@ import org.apache.solr.common.SolrException;
  *
  * @since solr 0.9
  */
-public interface DocSet extends Closeable, Accountable /* extends Collection<Integer> */ {
+public interface DocSet /* extends Collection<Integer> */ {
   
   /**
    * Adds the specified document if it is not currently in the DocSet
@@ -77,6 +74,15 @@ public interface DocSet extends Closeable, Accountable /* extends Collection<Int
    * </p>
    */
   public DocIterator iterator();
+
+  /**
+   * Returns the approximate amount of memory taken by this DocSet.
+   * This is only an approximation and doesn't take into account java object overhead.
+   *
+   * @return
+   * the approximate memory consumption in bytes
+   */
+  public long memSize();
 
   /**
    * Returns the intersection of this set with another set.  Neither set is modified - a new DocSet is

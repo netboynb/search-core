@@ -23,7 +23,6 @@ import java.util.Map;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.core.SolrCore;
-import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestHandler;
 import org.apache.solr.response.SolrQueryResponse;
@@ -37,7 +36,7 @@ import org.slf4j.LoggerFactory;
  * @since solr 1.3
  */
 @Deprecated
-public class AdminHandlers extends RequestHandlerBase implements SolrCoreAware
+public class AdminHandlers implements SolrCoreAware, SolrRequestHandler
 {
   public static Logger log = LoggerFactory.getLogger(AdminHandlers.class);
   NamedList initArgs = null;
@@ -60,12 +59,17 @@ public class AdminHandlers extends RequestHandlerBase implements SolrCoreAware
   public void init(NamedList args) {
     this.initArgs = args;
   }
-
+  
   @Override
   public void inform(SolrCore core) 
   {
     String path = null;
-    path = getPluginInfo().name;
+    for( Map.Entry<String, SolrRequestHandler> entry : core.getRequestHandlers().entrySet() ) {
+      if( entry.getValue() == this ) {
+        path = entry.getKey();
+        break;
+      }
+    }
     if( path == null ) {
       throw new SolrException( SolrException.ErrorCode.SERVER_ERROR, 
           "The AdminHandler is not registered with the current core." );
@@ -103,9 +107,9 @@ public class AdminHandlers extends RequestHandlerBase implements SolrCoreAware
     log.warn("<requestHandler name=\"/admin/\" \n class=\"solr.admin.AdminHandlers\" /> is deprecated . It is not required anymore");
   }
 
-
+  
   @Override
-  public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) {
+  public void handleRequest(SolrQueryRequest req, SolrQueryResponse rsp) {
     throw new SolrException( SolrException.ErrorCode.SERVER_ERROR, 
         "The AdminHandler should never be called directly" );
   }

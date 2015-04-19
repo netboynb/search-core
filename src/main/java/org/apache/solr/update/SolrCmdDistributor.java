@@ -176,9 +176,8 @@ public class SolrCmdDistributor {
     for (Node node : nodes) {
       UpdateRequest uReq = new UpdateRequest();
       uReq.setParams(params);
-      uReq.setCommitWithin(cmd.commitWithin);
       if (cmd.isDeleteById()) {
-        uReq.deleteById(cmd.getId(), cmd.getRoute(), cmd.getVersion());
+        uReq.deleteById(cmd.getId(), cmd.getVersion());
       } else {
         uReq.deleteByQuery(cmd.query);
       }
@@ -253,11 +252,14 @@ public class SolrCmdDistributor {
   private void submit(final Req req, boolean isCommit) {
     if (req.synchronous) {
       blockAndDoRetries();
-
-      try (HttpSolrClient client = new HttpSolrClient(req.node.getUrl(), clients.getHttpClient())) {
+      
+      HttpSolrClient client = new HttpSolrClient(req.node.getUrl(), clients.getHttpClient());
+      try {
         client.request(req.uReq);
       } catch (Exception e) {
         throw new SolrException(ErrorCode.SERVER_ERROR, "Failed synchronous update on shard " + req.node + " update: " + req.uReq , e);
+      } finally {
+        client.shutdown();
       }
       
       return;

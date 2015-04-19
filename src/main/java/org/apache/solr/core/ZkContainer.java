@@ -17,10 +17,20 @@ package org.apache.solr.core;
  * limitations under the License.
  */
 
+import org.apache.solr.cloud.CurrentCoreDescriptorProvider;
+import org.apache.solr.cloud.SolrZkServer;
+import org.apache.solr.cloud.ZkController;
+import org.apache.solr.common.SolrException;
+import org.apache.solr.common.cloud.ZkStateReader;
+import org.apache.solr.common.cloud.ZooKeeperException;
+import org.apache.solr.common.util.ExecutorUtil;
+import org.apache.solr.util.DefaultSolrThreadFactory;
+import org.apache.zookeeper.KeeperException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -28,30 +38,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.log4j.MDC;
-import org.apache.solr.cloud.CurrentCoreDescriptorProvider;
-import org.apache.solr.cloud.SolrZkServer;
-import org.apache.solr.cloud.ZkController;
-import org.apache.solr.common.SolrException;
-import org.apache.solr.common.cloud.Replica;
-import org.apache.solr.common.cloud.ZkConfigManager;
-import org.apache.solr.common.cloud.ZooKeeperException;
-import org.apache.solr.common.util.ExecutorUtil;
-import org.apache.solr.logging.MDCUtils;
-import org.apache.solr.util.DefaultSolrThreadFactory;
-import org.apache.zookeeper.KeeperException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import static org.apache.solr.common.cloud.ZkStateReader.CORE_NAME_PROP;
-
 public class ZkContainer {
   protected static Logger log = LoggerFactory.getLogger(ZkContainer.class);
   
   protected ZkController zkController;
   private SolrZkServer zkServer;
 
-  private ExecutorService coreZkRegister = ExecutorUtil.newMDCAwareCachedThreadPool(
+  private ExecutorService coreZkRegister = Executors.newFixedThreadPool(Integer.MAX_VALUE,
       new DefaultSolrThreadFactory("coreZkRegister") );
   
   // see ZkController.zkRunOnly
@@ -61,19 +54,44 @@ public class ZkContainer {
     
   }
 
-  public void initZooKeeper(final CoreContainer cc, String solrHome, CloudConfig config) {
+  public void initZooKeeper(final CoreContainer cc, String solrHome, ConfigSolr config) {
+
+    if (config.getCoreLoadThreadCount() <= 1) {
+      throw new SolrException(SolrException.ErrorCode.SERVER_ERROR,
+          "SolrCloud requires a value of at least 2 in solr.xml for coreLoadThreads");
+    }
+
+    initZooKeeper(cc, solrHome,
+        config.getZkHost(), config.getZkClientTimeout(), config.getSolrHostPort(), config.getZkHostContext(),
+        config.getHost(), config.getLeaderVoteWait(), config.getLeaderConflictResolveWait(), config.getGenericCoreNodeNames());
+  }
+    
+  public void initZooKeeper(final CoreContainer cc, String solrHome, String zkHost, int zkClientTimeout, String solrHostPort,
+        String hostContext, String host, int leaderVoteWait, int leaderConflictResolveWait, boolean genericCoreNodeNames) {
 
     ZkController zkController = null;
+    
+    // if zkHost sys property is not set, we are not using ZooKeeper
+    String zookeeperHost;
+    if(zkHost == null) {
+      zookeeperHost = System.getProperty("zkHost");
+    } else {
+      zookeeperHost = zkHost;
+    }
 
     String zkRun = System.getProperty("zkRun");
-
-    if (zkRun != null && config == null)
-      throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Cannot start Solr in cloud mode - no cloud config provided");
     
-    if (config == null)
+    if (zkRun == null && zookeeperHost == null)
         return;  // not in zk mode
 
-    String zookeeperHost = config.getZkHost();
+    if (null == solrHostPort) {
+      throw new ZooKeeperException(SolrException.ErrorCode.SERVER_ERROR,
+                   "'hostPort' must be configured to run SolrCloud");
+    }
+    if (null == hostContext) {
+      throw new ZooKeeperException(SolrException.ErrorCode.SERVER_ERROR,
+                   "'hostContext' must be configured to run SolrCloud");
+    }
 
     // zookeeper in quorum mode currently causes a failure when trying to
     // register log4j mbeans.  See SOLR-2369
@@ -83,7 +101,7 @@ public class ZkContainer {
     if (zkRun != null) {
       String zkDataHome = System.getProperty("zkServerDataDir", solrHome + "zoo_data");
       String zkConfHome = System.getProperty("zkServerConfDir", solrHome);
-      zkServer = new SolrZkServer(stripChroot(zkRun), stripChroot(config.getZkHost()), zkDataHome, zkConfHome, config.getSolrHostPort());
+      zkServer = new SolrZkServer(stripChroot(zkRun), stripChroot(zookeeperHost), zkDataHome, zkConfHome, solrHostPort);
       zkServer.parseConfig();
       zkServer.start();
       
@@ -113,7 +131,9 @@ public class ZkContainer {
           throw new ZooKeeperException(SolrException.ErrorCode.SERVER_ERROR,
               "A chroot was specified in ZkHost but the znode doesn't exist. " + zookeeperHost);
         }
-        zkController = new ZkController(cc, zookeeperHost, zkClientConnectTimeout, config,
+        zkController = new ZkController(cc, zookeeperHost, zkClientTimeout,
+            zkClientConnectTimeout, host, solrHostPort, hostContext,
+            leaderVoteWait, leaderConflictResolveWait, genericCoreNodeNames,
             new CurrentCoreDescriptorProvider() {
 
               @Override
@@ -136,13 +156,12 @@ public class ZkContainer {
         }
         
         if(confDir != null) {
-          Path configPath = Paths.get(confDir);
-          if (!Files.isDirectory(configPath))
+          File dir = new File(confDir);
+          if(!dir.isDirectory()) {
             throw new IllegalArgumentException("bootstrap_confdir must be a directory of configuration files");
-
+          }
           String confName = System.getProperty(ZkController.COLLECTION_PARAM_PREFIX+ZkController.CONFIGNAME_PROP, "configuration1");
-          ZkConfigManager configManager = new ZkConfigManager(zkController.getZkClient());
-          configManager.uploadConfigDir(configPath, confName);
+          zkController.uploadConfigDir(dir, confName);
         }
 
 
@@ -161,12 +180,16 @@ public class ZkContainer {
         log.error("Could not connect to ZooKeeper", e);
         throw new ZooKeeperException(SolrException.ErrorCode.SERVER_ERROR,
             "", e);
-      } catch (IOException | KeeperException e) {
+      } catch (IOException e) {
+        log.error("", e);
+        throw new ZooKeeperException(SolrException.ErrorCode.SERVER_ERROR,
+            "", e);
+      } catch (KeeperException e) {
         log.error("", e);
         throw new ZooKeeperException(SolrException.ErrorCode.SERVER_ERROR,
             "", e);
       }
-
+      
 
     }
     this.zkController = zkController;
@@ -189,7 +212,7 @@ public class ZkContainer {
             SolrException.log(log, "", e);
           } catch (Exception e) {
             try {
-              zkController.publish(core.getCoreDescriptor(), Replica.State.DOWN);
+              zkController.publish(core.getCoreDescriptor(), ZkStateReader.DOWN);
             } catch (InterruptedException e1) {
               Thread.currentThread().interrupt();
               log.error("", e1);
@@ -199,19 +222,14 @@ public class ZkContainer {
             SolrException.log(log, "", e);
           }
         }
-
+      
     };
     
     if (zkController != null) {
-      MDCUtils.setCore(core.getName());
-      try {
-        if (background) {
-          coreZkRegister.execute(thread);
-        } else {
-          thread.run();
-        }
-      } finally {
-        MDC.remove(CORE_NAME_PROP);
+      if (background) {
+        coreZkRegister.execute(thread);
+      } else {
+        thread.run();
       }
     }
   }
@@ -224,7 +242,7 @@ public class ZkContainer {
     
     for (SolrCore core : cores) {
       try {
-        zkController.publish(core.getCoreDescriptor(), Replica.State.DOWN);
+        zkController.publish(core.getCoreDescriptor(), ZkStateReader.DOWN);
       } catch (KeeperException e) {
         CoreContainer.log.error("", e);
       } catch (InterruptedException e) {

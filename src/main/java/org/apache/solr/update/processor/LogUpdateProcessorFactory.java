@@ -188,9 +188,9 @@ class LogUpdateProcessor extends UpdateRequestProcessor {
       log.info(getLogStringAndClearRspToLog());
     }
 
-    if (log.isWarnEnabled() && slowUpdateThresholdMillis >= 0) {
-      final long elapsed = (long) req.getRequestTimer().getTime();
-      if (elapsed >= slowUpdateThresholdMillis) {
+    if (log.isWarnEnabled()) {
+      long elapsed = rsp.getEndTime() - req.getStartTime();
+      if (slowUpdateThresholdMillis >= 0 && elapsed >= slowUpdateThresholdMillis) {
         log.warn("slow: " + getLogStringAndClearRspToLog());
       }
     }
@@ -208,7 +208,7 @@ class LogUpdateProcessor extends UpdateRequestProcessor {
     if (deletes != null && numDeletes > maxNumToLog) {
       deletes.add("... (" + numDeletes + " deletes)");
     }
-    final long elapsed = (long) req.getRequestTimer().getTime();
+    long elapsed = rsp.getEndTime() - req.getStartTime();
 
     sb.append(toLog).append(" 0 ").append(elapsed);
     return sb.toString();

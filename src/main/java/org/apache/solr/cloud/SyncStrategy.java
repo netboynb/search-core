@@ -163,7 +163,7 @@ public class SyncStrategy {
     // if we can't reach a replica for sync, we still consider the overall sync a success
     // TODO: as an assurance, we should still try and tell the sync nodes that we couldn't reach
     // to recover once more?
-    PeerSync peerSync = new PeerSync(core, syncWith, core.getUpdateHandler().getUpdateLog().getNumRecordsToKeep(), true, true, peerSyncOnlyWithActive);
+    PeerSync peerSync = new PeerSync(core, syncWith, core.getUpdateHandler().getUpdateLog().numRecordsToKeep, true, true, peerSyncOnlyWithActive);
     return peerSync.sync();
   }
   
@@ -267,8 +267,8 @@ public class SyncStrategy {
         recoverRequestCmd.setAction(CoreAdminAction.REQUESTRECOVERY);
         recoverRequestCmd.setCoreName(coreName);
         
-        ;
-        try (HttpSolrClient client = new HttpSolrClient(baseUrl, SyncStrategy.this.client)) {
+        HttpSolrClient client = new HttpSolrClient(baseUrl, SyncStrategy.this.client);
+        try {
           client.setConnectionTimeout(30000);
           client.setSoTimeout(120000);
           client.request(recoverRequestCmd);
@@ -277,6 +277,8 @@ public class SyncStrategy {
           if (t instanceof Error) {
             throw (Error) t;
           }
+        } finally {
+          client.shutdown();
         }
       }
     };

@@ -22,8 +22,6 @@ import java.util.Map;
 import org.apache.solr.util.DOMUtil;
 import org.w3c.dom.Node;
 
-import static org.apache.solr.common.params.CommonParams.NAME;
-
 /**
  * 
  *
@@ -40,7 +38,7 @@ public class MapPluginLoader<T extends MapInitializedPlugin> extends AbstractPlu
 
   @Override
   protected void init(T plugin, Node node) throws Exception {
-    Map<String, String> params = DOMUtil.toMapExcept(node.getAttributes(), NAME, "class");
+    Map<String,String> params = DOMUtil.toMapExcept( node.getAttributes(), "name","class" );
     plugin.init( params );
   }
 

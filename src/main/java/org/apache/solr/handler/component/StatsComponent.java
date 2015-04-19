@@ -52,6 +52,8 @@ public class StatsComponent extends SearchComponent {
   @Override
   public void process(ResponseBuilder rb) throws IOException {
     if (!rb.doStats) return;
+
+    boolean isShard = rb.req.getParams().getBool(ShardParams.IS_SHARD, false);
     Map<String, StatsValues> statsValues = new LinkedHashMap<>();
 
     for (StatsField statsField : rb._statsInfo.getStatsFields()) {
@@ -59,7 +61,7 @@ public class StatsComponent extends SearchComponent {
       statsValues.put(statsField.getOutputKey(), statsField.computeLocalStatsValues(docs));
     }
     
-    rb.rsp.add( "stats", convertToResponse(statsValues) );
+    rb.rsp.add( "stats", convertToResponse(isShard, statsValues) );
   }
 
   @Override
@@ -120,7 +122,7 @@ public class StatsComponent extends SearchComponent {
     // so that "result" is already stored in the response (for aesthetics)
 
     Map<String, StatsValues> allStatsValues = rb._statsInfo.getAggregateStatsValues();
-    rb.rsp.add("stats", convertToResponse(allStatsValues));
+    rb.rsp.add("stats", convertToResponse(false, allStatsValues));
 
     rb._statsInfo = null; // free some objects 
   }
@@ -140,7 +142,7 @@ public class StatsComponent extends SearchComponent {
    * including the esoteric "stats_fields" wrapper.
    */
   public static NamedList<NamedList<NamedList<?>>> convertToResponse
-    (Map<String,StatsValues> statsValues) {
+    (boolean force, Map<String,StatsValues> statsValues) {
 
     NamedList<NamedList<NamedList<?>>> stats = new SimpleOrderedMap<>();
     NamedList<NamedList<?>> stats_fields = new SimpleOrderedMap<>();
@@ -149,7 +151,11 @@ public class StatsComponent extends SearchComponent {
     for (Map.Entry<String,StatsValues> entry : statsValues.entrySet()) {
       String key = entry.getKey();
       NamedList stv = entry.getValue().getStatsValues();
-      stats_fields.add(key, stv);
+      if (force || ((Long) stv.get("count") != 0)) {
+        stats_fields.add(key, stv);
+      } else {
+        stats_fields.add(key, null);
+      }
     }
     return stats;
   }

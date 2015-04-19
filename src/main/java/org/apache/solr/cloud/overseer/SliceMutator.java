@@ -39,7 +39,6 @@ import org.slf4j.LoggerFactory;
 import static org.apache.solr.cloud.OverseerCollectionProcessor.COLL_PROP_PREFIX;
 import static org.apache.solr.cloud.overseer.CollectionMutator.checkCollectionKeyExistence;
 import static org.apache.solr.common.cloud.ZkNodeProps.makeMap;
-import static org.apache.solr.common.params.CommonParams.NAME;
 
 public class SliceMutator {
   private static Logger log = LoggerFactory.getLogger(SliceMutator.class);
@@ -123,7 +122,7 @@ public class SliceMutator {
     // if there are no slices left in the collection, remove it?
     if (newSlices.size() == 0) {
       return new ClusterStateMutator(zkStateReader).deleteCollection(clusterState,
-          new ZkNodeProps(ZkNodeProps.makeMap(NAME, collection)));
+          new ZkNodeProps(ZkNodeProps.makeMap("name", collection)));
     } else {
       return new ZkWriteCommand(collection, coll.copyWithSlices(newSlices));
     }
@@ -188,12 +187,10 @@ public class SliceMutator {
       }
       log.info("Update shard state " + key + " to " + message.getStr(key));
       Map<String, Object> props = slice.shallowCopy();
-      
-      if (Slice.State.getState((String) props.get(ZkStateReader.STATE_PROP)) == Slice.State.RECOVERY
-          && Slice.State.getState(message.getStr(key)) == Slice.State.ACTIVE) {
+      if (Slice.RECOVERY.equals(props.get(Slice.STATE)) && Slice.ACTIVE.equals(message.getStr(key))) {
         props.remove(Slice.PARENT);
       }
-      props.put(ZkStateReader.STATE_PROP, message.getStr(key));
+      props.put(Slice.STATE, message.getStr(key));
       Slice newSlice = new Slice(slice.getName(), slice.getReplicasCopy(), props);
       slicesCopy.put(slice.getName(), newSlice);
     }

@@ -16,6 +16,18 @@ package org.apache.solr.handler.component;
  * limitations under the License.
  */
 
+import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
 import org.apache.commons.lang.StringUtils;
 import org.apache.http.client.HttpClient;
 import org.apache.http.impl.client.DefaultHttpClient;
@@ -29,23 +41,11 @@ import org.apache.solr.common.util.ExecutorUtil;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.StrUtils;
 import org.apache.solr.common.util.URLUtil;
+import org.apache.solr.core.ConfigSolr;
 import org.apache.solr.core.PluginInfo;
-import org.apache.solr.update.UpdateShardHandlerConfig;
 import org.apache.solr.util.DefaultSolrThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.io.IOException;
-import java.util.Collections;
-import java.util.List;
-import java.util.Random;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CompletionService;
-import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
 
 public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.apache.solr.util.plugin.PluginInfoInitialized {
@@ -58,7 +58,7 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.
   //
   // Consider CallerRuns policy and a lower max threads to throttle
   // requests at some point (or should we simply return failure?)
-  private ThreadPoolExecutor commExecutor = new ExecutorUtil.MDCAwareThreadPoolExecutor(
+  private ThreadPoolExecutor commExecutor = new ThreadPoolExecutor(
       0,
       Integer.MAX_VALUE,
       5, TimeUnit.SECONDS, // terminate idle threads after 5 sec
@@ -69,8 +69,8 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.
   protected HttpClient defaultClient;
   private LBHttpSolrClient loadbalancer;
   //default values:
-  int soTimeout = UpdateShardHandlerConfig.DEFAULT_DISTRIBUPDATESOTIMEOUT;
-  int connectionTimeout = UpdateShardHandlerConfig.DEFAULT_DISTRIBUPDATECONNTIMEOUT;
+  int soTimeout = ConfigSolr.DEFAULT_DISTRIBUPDATESOTIMEOUT;
+  int connectionTimeout = ConfigSolr.DEFAULT_DISTRIBUPDATECONNTIMEOUT;
   int maxConnectionsPerHost = 20;
   int maxConnections = 10000;
   int corePoolSize = 0;
@@ -123,24 +123,21 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.
 
   @Override
   public void init(PluginInfo info) {
-    StringBuilder sb = new StringBuilder();
     NamedList args = info.initArgs;
-    this.soTimeout = getParameter(args, HttpClientUtil.PROP_SO_TIMEOUT, soTimeout,sb);
-    this.scheme = getParameter(args, INIT_URL_SCHEME, null,sb);
+    this.soTimeout = getParameter(args, HttpClientUtil.PROP_SO_TIMEOUT, soTimeout);
+    this.scheme = getParameter(args, INIT_URL_SCHEME, null);
     if(StringUtils.endsWith(this.scheme, "://")) {
       this.scheme = StringUtils.removeEnd(this.scheme, "://");
     }
-
-    this.connectionTimeout = getParameter(args, HttpClientUtil.PROP_CONNECTION_TIMEOUT, connectionTimeout, sb);
-    this.maxConnectionsPerHost = getParameter(args, HttpClientUtil.PROP_MAX_CONNECTIONS_PER_HOST, maxConnectionsPerHost,sb);
-    this.maxConnections = getParameter(args, HttpClientUtil.PROP_MAX_CONNECTIONS, maxConnections,sb);
-    this.corePoolSize = getParameter(args, INIT_CORE_POOL_SIZE, corePoolSize,sb);
-    this.maximumPoolSize = getParameter(args, INIT_MAX_POOL_SIZE, maximumPoolSize,sb);
-    this.keepAliveTime = getParameter(args, MAX_THREAD_IDLE_TIME, keepAliveTime,sb);
-    this.queueSize = getParameter(args, INIT_SIZE_OF_QUEUE, queueSize,sb);
-    this.accessPolicy = getParameter(args, INIT_FAIRNESS_POLICY, accessPolicy,sb);
-    this.useRetries = getParameter(args, USE_RETRIES, useRetries,sb);
-    log.info("created with {}",sb);
+    this.connectionTimeout = getParameter(args, HttpClientUtil.PROP_CONNECTION_TIMEOUT, connectionTimeout);
+    this.maxConnectionsPerHost = getParameter(args, HttpClientUtil.PROP_MAX_CONNECTIONS_PER_HOST, maxConnectionsPerHost);
+    this.maxConnections = getParameter(args, HttpClientUtil.PROP_MAX_CONNECTIONS, maxConnections);
+    this.corePoolSize = getParameter(args, INIT_CORE_POOL_SIZE, corePoolSize);
+    this.maximumPoolSize = getParameter(args, INIT_MAX_POOL_SIZE, maximumPoolSize);
+    this.keepAliveTime = getParameter(args, MAX_THREAD_IDLE_TIME, keepAliveTime);
+    this.queueSize = getParameter(args, INIT_SIZE_OF_QUEUE, queueSize);
+    this.accessPolicy = getParameter(args, INIT_FAIRNESS_POLICY, accessPolicy);
+    this.useRetries = getParameter(args, USE_RETRIES, useRetries);
     
     // magic sysprop to make tests reproducible: set by SolrTestCaseJ4.
     String v = System.getProperty("tests.shardhandler.randomSeed");
@@ -152,7 +149,7 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.
         new SynchronousQueue<Runnable>(this.accessPolicy) :
         new ArrayBlockingQueue<Runnable>(this.queueSize, this.accessPolicy);
 
-    this.commExecutor = new ExecutorUtil.MDCAwareThreadPoolExecutor(
+    this.commExecutor = new ThreadPoolExecutor(
         this.corePoolSize,
         this.maximumPoolSize,
         this.keepAliveTime, TimeUnit.SECONDS,
@@ -188,13 +185,13 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.
     return new LBHttpSolrClient(httpClient);
   }
 
-  protected <T> T getParameter(NamedList initArgs, String configKey, T defaultValue, StringBuilder sb) {
+  protected <T> T getParameter(NamedList initArgs, String configKey, T defaultValue) {
     T toReturn = defaultValue;
     if (initArgs != null) {
       T temp = (T) initArgs.get(configKey);
       toReturn = (temp != null) ? temp : defaultValue;
     }
-    if(sb!=null && toReturn != null) sb.append(configKey).append(" : ").append(toReturn).append(",");
+    log.info("Setting {} to: {}", configKey, toReturn);
     return toReturn;
   }
 
@@ -211,7 +208,7 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory implements org.
       } finally {
         
         if (loadbalancer != null) {
-          loadbalancer.close();
+          loadbalancer.shutdown();
         }
       }
     }

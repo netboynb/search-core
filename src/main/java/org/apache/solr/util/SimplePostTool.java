@@ -518,7 +518,7 @@ public class SimplePostTool {
         Thread.sleep(delay * 1000);
         filesPosted++;
       } catch (InterruptedException e) {
-        throw new RuntimeException(e);
+        throw new RuntimeException();
       }
     }
     return filesPosted;
@@ -564,7 +564,7 @@ public class SimplePostTool {
 
   /**
    * A very simple crawler, pulling URLs to fetch from a backlog and then
-   * recurses N levels deep if recursive&gt;0. Links are parsed from HTML
+   * recurses N levels deep if recursive>0. Links are parsed from HTML
    * through first getting an XHTML version using SolrCell with extractOnly,
    * and followed if they are local. The crawler pauses for a default delay
    * of 10 seconds between each fetch, this can be configured in the delay
@@ -610,7 +610,7 @@ public class SimplePostTool {
       } catch (IOException e) {
         warn("Caught exception when trying to open connection to "+u+": "+e.getMessage());
       } catch (InterruptedException e) {
-        throw new RuntimeException(e);
+        throw new RuntimeException();
       }
     }
     if(!subStack.isEmpty()) {
@@ -744,7 +744,7 @@ public class SimplePostTool {
   /**
    * Appends a URL query parameter to a URL 
    * @param url the original URL
-   * @param param the parameter(s) to append, separated by "&amp;"
+   * @param param the parameter(s) to append, separated by "&"
    * @return the string version of the resulting URL
    */
   public static String appendParam(String url, String param) {
@@ -1209,7 +1209,7 @@ public class SimplePostTool {
       } catch (IOException e) {
         warn("IOException opening URL "+url+": "+e.getMessage());
       } catch (Exception e) {
-        throw new RuntimeException(e);
+        throw new RuntimeException();
       }
       return l;
     }

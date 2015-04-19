@@ -26,7 +26,6 @@ import org.apache.lucene.index.ExitableDirectoryReader;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.Filter;
-import org.apache.lucene.search.FilteredQuery;
 import org.apache.lucene.search.MultiCollector;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TimeLimitingCollector;
@@ -209,8 +208,8 @@ public class CommandHandler {
    * Invokes search with the specified filter and collector.  
    * If a time limit has been specified then wrap the collector in the TimeLimitingCollector
    */
-  private void searchWithTimeLimiter(Query query, 
-                                     ProcessedFilter filter, 
+  private void searchWithTimeLimiter(final Query query, 
+                                     final ProcessedFilter filter, 
                                      Collector collector) throws IOException {
     if (queryCommand.getTimeAllowed() > 0 ) {
       collector = new TimeLimitingCollector(collector, TimeLimitingCollector.getGlobalCounter(), queryCommand.getTimeAllowed());
@@ -221,19 +220,20 @@ public class CommandHandler {
       collector = MultiCollector.wrap(collector, hitCountCollector);
     }
 
-    if (filter.filter != null) {
-      query = new FilteredQuery(query, filter.filter);
-    }
+    Filter luceneFilter = filter.filter;
     if (filter.postFilter != null) {
       filter.postFilter.setLastDelegate(collector);
       collector = filter.postFilter;
     }
 
     try {
-      searcher.search(query, collector);
-    } catch (TimeLimitingCollector.TimeExceededException | ExitableDirectoryReader.ExitingReaderException x) {
+      searcher.search(query, luceneFilter, collector);
+    } catch (TimeLimitingCollector.TimeExceededException x) {
       partialResults = true;
       logger.warn( "Query: " + query + "; " + x.getMessage() );
+    } catch (ExitableDirectoryReader.ExitingReaderException e) {
+      partialResults = true;
+      logger.warn( "Query: " + query + "; " + e.getMessage() );
     }
 
     if (includeHitCount) {

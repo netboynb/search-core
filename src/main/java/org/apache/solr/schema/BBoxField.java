@@ -44,7 +44,6 @@ public class BBoxField extends AbstractSpatialFieldType<BBoxStrategy> implements
 
   private String numberTypeName;//required
   private String booleanTypeName = "boolean";
-  private boolean storeSubFields = false;
 
   private IndexSchema schema;
 
@@ -66,11 +65,6 @@ public class BBoxField extends AbstractSpatialFieldType<BBoxStrategy> implements
     v = args.remove("booleanType");
     if (v != null) {
       booleanTypeName = v;
-    }
-    
-    v = args.remove("storeSubFields");
-    if (v != null) {
-      storeSubFields = Boolean.valueOf(v);
     }
   }
 
@@ -114,14 +108,7 @@ public class BBoxField extends AbstractSpatialFieldType<BBoxStrategy> implements
   // note: Registering the field is probably optional; it makes it show up in the schema browser and may have other
   //  benefits.
   private void register(IndexSchema schema, String name, FieldType fieldType) {
-    int props = fieldType.properties;
-    if(storeSubFields) {
-      props |= STORED;
-    }
-    else {
-      props &= ~STORED;
-    }
-    SchemaField sf = new SchemaField(name, fieldType, props, null);
+    SchemaField sf = new SchemaField(name, fieldType);
     schema.getFields().put(sf.getName(), sf);
   }
 
@@ -139,8 +126,6 @@ public class BBoxField extends AbstractSpatialFieldType<BBoxStrategy> implements
     final SchemaField solrNumField = new SchemaField("_", numberType);//dummy temp
     org.apache.lucene.document.FieldType luceneType =
         (org.apache.lucene.document.FieldType) solrNumField.createField(0.0, 1.0f).fieldType();
-    luceneType.setStored(storeSubFields);
-    
     //and annoyingly this Field isn't going to have a docValues format because Solr uses a separate Field for that
     if (solrNumField.hasDocValues()) {
       luceneType = new org.apache.lucene.document.FieldType(luceneType);

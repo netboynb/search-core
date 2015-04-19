@@ -55,7 +55,7 @@ public abstract class ContentStreamHandlerBase extends RequestHandlerBase {
   public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws Exception {
     SolrParams params = req.getParams();
     UpdateRequestProcessorChain processorChain =
-        req.getCore().getUpdateProcessorChain(params);
+            req.getCore().getUpdateProcessingChain(params.get(UpdateParams.UPDATE_CHAIN));
 
     UpdateRequestProcessor processor = processorChain.createProcessor(req, rsp);
 

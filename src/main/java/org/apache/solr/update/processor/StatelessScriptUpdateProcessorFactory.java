@@ -90,6 +90,7 @@ import org.slf4j.LoggerFactory;
  *  <li>logger - A {@link Logger} that can be used for logging purposes in the script</li>
  *  <li>params - The "params" init argument in the factory configuration (if any)</li>
  * </ul>
+ * </p>
  * <p>
  * Internally this update processor uses JDK 6 scripting engine support, 
  * and any {@link Invocable} implementations of <code>ScriptEngine</code> 
@@ -428,7 +429,13 @@ public class StatelessScriptUpdateProcessorFactory extends UpdateRequestProcesso
             }
           }
 
-        } catch (ScriptException | NoSuchMethodException e) {
+        } catch (ScriptException e) {
+          throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, 
+                                  "Unable to invoke function " + name + 
+                                  " in script: " + 
+                                  engine.getScriptFile().getFileName() + 
+                                  ": " + e.getMessage(), e);
+        } catch (NoSuchMethodException e) {
           throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, 
                                   "Unable to invoke function " + name + 
                                   " in script: " + 

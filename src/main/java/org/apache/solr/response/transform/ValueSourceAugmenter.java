@@ -96,15 +96,12 @@ public class ValueSourceAugmenter extends DocTransformer
       }
 
       int localId = docid - rcontext.docBase;
-      setValue(doc,values.objectVal(localId));
+      Object val = values.objectVal(localId);
+      if (val != null) {
+        doc.setField( name, val );
+      }
     } catch (IOException e) {
       throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "exception at docid " + docid + " for valuesource " + valueSource, e);
-    }
-  }
-  
-  protected void setValue(SolrDocument doc, Object val) {
-    if(val!=null) {
-      doc.setField( name, val );
     }
   }
 }

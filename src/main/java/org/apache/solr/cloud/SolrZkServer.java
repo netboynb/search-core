@@ -17,16 +17,6 @@ package org.apache.solr.cloud;
  * the License.
  */
 
-import org.apache.solr.common.SolrException;
-import org.apache.zookeeper.server.ServerConfig;
-import org.apache.zookeeper.server.ZooKeeperServerMain;
-import org.apache.zookeeper.server.quorum.QuorumPeer;
-import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
-import org.apache.zookeeper.server.quorum.QuorumPeerMain;
-import org.apache.zookeeper.server.quorum.flexible.QuorumHierarchical;
-import org.apache.zookeeper.server.quorum.flexible.QuorumMaj;
-import org.slf4j.LoggerFactory;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -37,8 +27,18 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Properties;
+import java.util.Map.Entry;
+
+import org.apache.solr.common.SolrException;
+import org.apache.zookeeper.server.ServerConfig;
+import org.apache.zookeeper.server.ZooKeeperServerMain;
+import org.apache.zookeeper.server.quorum.QuorumPeer;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
+import org.apache.zookeeper.server.quorum.QuorumPeerMain;
+import org.apache.zookeeper.server.quorum.flexible.QuorumHierarchical;
+import org.apache.zookeeper.server.quorum.flexible.QuorumMaj;
+import org.slf4j.LoggerFactory;
 
 
 public class SolrZkServer {
@@ -47,7 +47,7 @@ public class SolrZkServer {
   String zkRun;
   String zkHost;
 
-  int solrPort;
+  String solrPort;
   Properties props;
   SolrZkServerProps zkProps;
 
@@ -56,7 +56,7 @@ public class SolrZkServer {
   private String dataHome;
   private String confHome;
 
-  public SolrZkServer(String zkRun, String zkHost, String dataHome, String confHome, int solrPort) {
+  public SolrZkServer(String zkRun, String zkHost, String dataHome, String confHome, String solrPort) {
     this.zkRun = zkRun;
     this.zkHost = zkHost;
     this.dataHome = dataHome;
@@ -81,7 +81,7 @@ public class SolrZkServer {
       // TODO: use something based on IP+port???  support ensemble all from same solr home?
       zkProps.setDataDir(dataHome);
       zkProps.zkRun = zkRun;
-      zkProps.solrPort = Integer.toString(solrPort);
+      zkProps.solrPort = solrPort;
     }
     
     try {
@@ -89,11 +89,14 @@ public class SolrZkServer {
       SolrZkServerProps.injectServers(props, zkRun, zkHost);
       zkProps.parseProperties(props);
       if (zkProps.getClientPortAddress() == null) {
-        zkProps.setClientPort(solrPort + 1000);
+        zkProps.setClientPort(Integer.parseInt(solrPort)+1000);
       }
-    } catch (QuorumPeerConfig.ConfigException | IOException e) {
+    } catch (QuorumPeerConfig.ConfigException e) {
       if (zkRun != null)
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
+    } catch (IOException e) {
+      if (zkRun != null)
+      throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
     }
   }
 
@@ -183,7 +186,9 @@ class SolrZkServerProps extends QuorumPeerConfig {
 
       return cfg;
 
-    } catch (IOException | IllegalArgumentException e) {
+    } catch (IOException e) {
+      throw new ConfigException("Error processing " + path, e);
+    } catch (IllegalArgumentException e) {
       throw new ConfigException("Error processing " + path, e);
     }
   }

@@ -17,16 +17,12 @@
 
 package org.apache.solr.search;
 
-import java.util.Collection;
-import java.util.Collections;
-
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BitsFilteredDocIdSet;
 import org.apache.lucene.search.DocIdSet;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Filter;
-import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.RamUsageEstimator;
@@ -35,8 +31,6 @@ import org.apache.lucene.util.RamUsageEstimator;
  * <code>SortedIntDocSet</code> represents a sorted set of Lucene Document Ids.
  */
 public class SortedIntDocSet extends DocSetBase {
-  private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(SortedIntDocSet.class) + RamUsageEstimator.NUM_BYTES_ARRAY_HEADER;
-
   protected final int[] docs;
 
   /**
@@ -44,6 +38,7 @@ public class SortedIntDocSet extends DocSetBase {
    */
   public SortedIntDocSet(int[] docs) {
     this.docs = docs;
+    // if (firstNonSorted(docs,0,docs.length)>=0) throw new RuntimeException("NON SORTED DOCS!!!");
   }
 
   /**
@@ -58,6 +53,11 @@ public class SortedIntDocSet extends DocSetBase {
 
   @Override
   public int size()      { return docs.length; }
+
+  @Override
+  public long memSize() {
+    return (docs.length<<2)+8;
+  }
 
   public static int[] zeroInts = new int[0];
   public static SortedIntDocSet zero = new SortedIntDocSet(zeroInts);
@@ -243,7 +243,7 @@ public class SortedIntDocSet extends DocSetBase {
 
     // if b is 8 times bigger than a, use the modified binary search.
     if ((b.length>>3) >= a.length) {
-      return intersectionSize(a, b);
+      return intersectionSize(a,b);
     }
 
     // if they are close in size, just do a linear walk of both.
@@ -779,25 +779,11 @@ public class SortedIntDocSet extends DocSetBase {
 
         }, acceptDocs2);
       }
-      @Override
-      public String toString(String field) {
-        return "SortedIntDocSetTopFilter";
-      }
     };
   }
 
   @Override
   protected SortedIntDocSet clone() {
     return new SortedIntDocSet(docs.clone());
-  }
-
-  @Override
-  public long ramBytesUsed() {
-    return BASE_RAM_BYTES_USED + (docs.length << 2);
-  }
-
-  @Override
-  public Collection<Accountable> getChildResources() {
-    return Collections.emptyList();
   }
 }

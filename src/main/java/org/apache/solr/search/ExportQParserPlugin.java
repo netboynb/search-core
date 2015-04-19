@@ -80,11 +80,15 @@ public class ExportQParserPlugin extends QParserPlugin {
     }
 
     public Weight createWeight(IndexSearcher searcher) throws IOException {
-      return mainQuery.createWeight(searcher, true);
+      return mainQuery.createWeight(searcher);
     }
 
     public Query rewrite(IndexReader reader) throws IOException {
       return this.mainQuery.rewrite(reader);
+    }
+
+    public void extractTerms(Set<Term> terms) {
+      this.mainQuery.extractTerms(terms);
     }
 
     public TopDocsCollector getTopDocsCollector(int len,
@@ -170,9 +174,5 @@ public class ExportQParserPlugin extends QParserPlugin {
       return new TopDocs(totalHits, scoreDocs, 0.0f);
     }
 
-    @Override
-    public boolean needsScores() {
-      return true; // TODO: is this the case?
-    }
   }
 }

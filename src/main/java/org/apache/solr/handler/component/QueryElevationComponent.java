@@ -24,7 +24,7 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.PostingsEnum;
+import org.apache.lucene.index.DocsEnum;
 import org.apache.lucene.index.Fields;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.Term;
@@ -562,20 +562,21 @@ public class QueryElevationComponent extends SearchComponent implements SolrCore
       boostDocs = new IntIntOpenHashMap(boosted.size()*2);
 
       List<LeafReaderContext>leaves = indexSearcher.getTopReaderContext().leaves();
-      PostingsEnum postingsEnum = null;
+      TermsEnum termsEnum = null;
+      DocsEnum docsEnum = null;
       for(LeafReaderContext leaf : leaves) {
         LeafReader reader = leaf.reader();
         int docBase = leaf.docBase;
         Bits liveDocs = reader.getLiveDocs();
         Terms terms = reader.terms(fieldName);
-        TermsEnum termsEnum = terms.iterator();
+        termsEnum = terms.iterator(termsEnum);
         Iterator<BytesRef> it = localBoosts.iterator();
         while(it.hasNext()) {
           BytesRef ref = it.next();
           if(termsEnum.seekExact(ref)) {
-            postingsEnum = termsEnum.postings(liveDocs, postingsEnum);
-            int doc = postingsEnum.nextDoc();
-            if(doc != PostingsEnum.NO_MORE_DOCS) {
+            docsEnum = termsEnum.docs(liveDocs, docsEnum);
+            int doc = docsEnum.nextDoc();
+            if(doc != DocsEnum.NO_MORE_DOCS) {
               //Found the document.
               int p = boosted.get(ref);
               boostDocs.put(doc+docBase, p);
@@ -635,7 +636,8 @@ public class QueryElevationComponent extends SearchComponent implements SolrCore
       private final int[] values = new int[numHits];
       private int bottomVal;
       private int topVal;
-      private PostingsEnum postingsEnum;
+      private TermsEnum termsEnum;
+      private DocsEnum docsEnum;
       Set<String> seen = new HashSet<>(elevations.ids.size());
 
       @Override
@@ -683,19 +685,21 @@ public class QueryElevationComponent extends SearchComponent implements SolrCore
         if (fields == null) return;
         Terms terms = fields.terms(idField);
         if (terms == null) return;
-        TermsEnum termsEnum = terms.iterator();
+        termsEnum = terms.iterator(termsEnum);
         BytesRefBuilder term = new BytesRefBuilder();
         Bits liveDocs = context.reader().getLiveDocs();
 
         for (String id : elevations.ids) {
           term.copyChars(id);
           if (seen.contains(id) == false  && termsEnum.seekExact(term.get())) {
-            postingsEnum = termsEnum.postings(liveDocs, postingsEnum, PostingsEnum.NONE);
-            int docId = postingsEnum.nextDoc();
-            if (docId == DocIdSetIterator.NO_MORE_DOCS ) continue;  // must have been deleted
-            termValues[ordSet.put(docId)] = term.toBytesRef();
-            seen.add(id);
-            assert postingsEnum.nextDoc() == DocIdSetIterator.NO_MORE_DOCS;
+            docsEnum = termsEnum.docs(liveDocs, docsEnum, DocsEnum.FLAG_NONE);
+            if (docsEnum != null) {
+              int docId = docsEnum.nextDoc();
+              if (docId == DocIdSetIterator.NO_MORE_DOCS ) continue;  // must have been deleted
+              termValues[ordSet.put(docId)] = term.toBytesRef();
+              seen.add(id);
+              assert docsEnum.nextDoc() == DocIdSetIterator.NO_MORE_DOCS;
+            }
           }
         }
       }

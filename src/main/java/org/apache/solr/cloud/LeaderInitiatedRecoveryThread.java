@@ -113,8 +113,9 @@ public class LeaderInitiatedRecoveryThread extends Thread {
       } else {
         log.info("Asking core={} coreNodeName={} on " + recoveryUrl + " to recover", coreNeedingRecovery, replicaCoreNodeName);
       }
-
-      try (HttpSolrClient client = new HttpSolrClient(recoveryUrl)) {
+      
+      HttpSolrClient client = new HttpSolrClient(recoveryUrl);
+      try {
         client.setSoTimeout(60000);
         client.setConnectionTimeout(15000);
         try {
@@ -138,6 +139,8 @@ public class LeaderInitiatedRecoveryThread extends Thread {
             continueTrying = false;
           }                                                
         }
+      } finally {
+        client.shutdown();
       }
       
       // wait a few seconds
@@ -193,7 +196,8 @@ public class LeaderInitiatedRecoveryThread extends Thread {
         if (collection != null && shardId != null) {
           try {
             // call out to ZooKeeper to get the leader-initiated recovery state
-            final Replica.State lirState = zkController.getLeaderInitiatedRecoveryState(collection, shardId, replicaCoreNodeName);
+            String lirState = 
+                zkController.getLeaderInitiatedRecoveryState(collection, shardId, replicaCoreNodeName);
             
             if (lirState == null) {
               log.warn("Stop trying to send recovery command to downed replica core="+coreNeedingRecovery+
@@ -202,7 +206,7 @@ public class LeaderInitiatedRecoveryThread extends Thread {
               break;              
             }
             
-            if (lirState == Replica.State.RECOVERING) {
+            if (ZkStateReader.RECOVERING.equals(lirState)) {
               // replica has ack'd leader initiated recovery and entered the recovering state
               // so we don't need to keep looping to send the command
               continueTrying = false;  
@@ -215,20 +219,18 @@ public class LeaderInitiatedRecoveryThread extends Thread {
                   zkStateReader.getReplicaProps(collection, shardId, leaderCoreNodeName);
               if (replicaProps != null && replicaProps.size() > 0) {
                 for (ZkCoreNodeProps prop : replicaProps) {
-                  final Replica replica = (Replica) prop.getNodeProps();
-                  if (replicaCoreNodeName.equals(replica.getName())) {
-                    if (replica.getState() == Replica.State.ACTIVE) {
+                  if (replicaCoreNodeName.equals(((Replica) prop.getNodeProps()).getName())) {
+                    String replicaState = prop.getState();
+                    if (ZkStateReader.ACTIVE.equals(replicaState)) {
                       // replica published its state as "active",
                       // which is bad if lirState is still "down"
-                      if (lirState == Replica.State.DOWN) {
+                      if (ZkStateReader.DOWN.equals(lirState)) {
                         // OK, so the replica thinks it is active, but it never ack'd the leader initiated recovery
                         // so its state cannot be trusted and it needs to be told to recover again ... and we keep looping here
                         log.warn("Replica core={} coreNodeName={} set to active but the leader thinks it should be in recovery;"
                             + " forcing it back to down state to re-run the leader-initiated recovery process; props: "+replicaProps.get(0), coreNeedingRecovery, replicaCoreNodeName);
-                        zkController.ensureReplicaInLeaderInitiatedRecovery(
-                            collection, shardId, nodeProps, leaderCoreNodeName,
-                            true /* forcePublishState */, true /* retryOnConnLoss */
-                        );
+                        zkController.ensureReplicaInLeaderInitiatedRecovery(collection,
+                            shardId, replicaUrl, nodeProps, true); // force republish state to "down"
                       }
                     }
                     break;

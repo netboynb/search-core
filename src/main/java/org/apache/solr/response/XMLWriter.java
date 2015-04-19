@@ -33,8 +33,6 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.search.ReturnFields;
 import org.apache.solr.search.SolrReturnFields;
 
-import static org.apache.solr.common.params.CommonParams.NAME;
-
 
 /**
  * @lucene.internal
@@ -146,7 +144,7 @@ public class XMLWriter extends TextResponseWriter {
     writer.write('<');
     writer.write(tag);
     if (name!=null) {
-      writeAttr(NAME, name);
+      writeAttr("name", name);
       if (closeTag) {
         writer.write("/>");
       } else {
@@ -169,7 +167,7 @@ public class XMLWriter extends TextResponseWriter {
     if (doIndent) indent();
 
     writer.write("<result");
-    writeAttr(NAME, name);
+    writeAttr("name",name);
     writeAttr("numFound",Long.toString(numFound));
     writeAttr("start",Long.toString(start));
     if(maxScore!=null) {

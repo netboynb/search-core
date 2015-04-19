@@ -23,8 +23,6 @@ import org.apache.solr.common.util.NamedList;
 public class OverseerSolrResponse extends SolrResponse {
   
   NamedList responseList = null;
-
-  private long elapsedTime;
   
   public OverseerSolrResponse(NamedList list) {
     responseList = list;
@@ -32,19 +30,15 @@ public class OverseerSolrResponse extends SolrResponse {
   
   @Override
   public long getElapsedTime() {
-    return elapsedTime;
+    // TODO Auto-generated method stub
+    return 0;
   }
   
   @Override
   public void setResponse(NamedList<Object> rsp) {
     this.responseList = rsp;
   }
-
-  @Override
-  public void setElapsedTime(long elapsedTime) {
-    this.elapsedTime = elapsedTime;
-  }
-
+  
   @Override
   public NamedList<Object> getResponse() {
     return responseList;

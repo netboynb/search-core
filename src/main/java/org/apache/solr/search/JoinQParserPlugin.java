@@ -21,14 +21,13 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.DocsEnum;
 import org.apache.lucene.index.Fields;
 import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.MultiPostingsEnum;
-import org.apache.lucene.index.PostingsEnum;
+import org.apache.lucene.index.MultiDocsEnum;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.ComplexExplanation;
@@ -45,12 +44,7 @@ import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.StringHelper;
-import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
-import org.apache.solr.common.cloud.Aliases;
-import org.apache.solr.common.cloud.Replica;
-import org.apache.solr.common.cloud.Slice;
-import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
@@ -62,6 +56,7 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestInfo;
 import org.apache.solr.schema.TrieField;
 import org.apache.solr.util.RefCounted;
+
 
 public class JoinQParserPlugin extends QParserPlugin {
   public static final String NAME = "join";
@@ -85,45 +80,13 @@ public class JoinQParserPlugin extends QParserPlugin {
         if (fromIndex != null && !fromIndex.equals(req.getCore().getCoreDescriptor().getName()) ) {
           CoreContainer container = req.getCore().getCoreDescriptor().getCoreContainer();
 
-          // if in SolrCloud mode, fromIndex should be the name of a single-sharded collection
-          if (container.isZooKeeperAware()) {
-            ZkController zkController = container.getZkController();
-            if (!zkController.getClusterState().hasCollection(fromIndex)) {
-              // collection not found ... but it might be an alias?
-              String resolved = null;
-              Aliases aliases = zkController.getZkStateReader().getAliases();
-              if (aliases != null) {
-                Map<String, String> collectionAliases = aliases.getCollectionAliasMap();
-                resolved = (collectionAliases != null) ? collectionAliases.get(fromIndex) : null;
-                if (resolved != null) {
-                  // ok, was an alias, but if the alias points to multiple collections, then we don't support that yet
-                  if (resolved.split(",").length > 1)
-                    throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
-                        "SolrCloud join: Collection alias '" + fromIndex +
-                            "' maps to multiple collections ("+resolved+
-                            "), which is not currently supported for joins.");
-                }
-              }
+          final SolrCore fromCore = container.getCore(fromIndex);
+          RefCounted<SolrIndexSearcher> fromHolder = null;
 
-              if (resolved == null)
-                throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
-                  "SolrCloud join: Collection '" + fromIndex + "' not found!");
-
-              // ok, resolved to an alias
-              fromIndex = resolved;
-            }
-
-            // the fromIndex is a local replica for a single-sharded collection with replicas
-            // across all nodes that have replicas for the collection we're joining with
-            fromIndex = findLocalReplicaForFromIndex(zkController, fromIndex);
+          if (fromCore == null) {
+            throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Cross-core join: no such core " + fromIndex);
           }
 
-          final SolrCore fromCore = container.getCore(fromIndex);
-          if (fromCore == null)
-            throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
-                "Cross-core join: no such core " + fromIndex);
-
-          RefCounted<SolrIndexSearcher> fromHolder = null;
           LocalSolrQueryRequest otherReq = new LocalSolrQueryRequest(fromCore, params);
           try {
             QParser parser = QParser.getParser(v, "lucene", otherReq);
@@ -145,38 +108,6 @@ public class JoinQParserPlugin extends QParserPlugin {
         return jq;
       }
     };
-  }
-
-  protected String findLocalReplicaForFromIndex(ZkController zkController, String fromIndex) {
-    String fromReplica = null;
-
-    String nodeName = zkController.getNodeName();
-    for (Slice slice : zkController.getClusterState().getActiveSlices(fromIndex)) {
-      if (fromReplica != null)
-        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
-            "SolrCloud join: multiple shards not yet supported " + fromIndex);
-
-      for (Replica replica : slice.getReplicas()) {
-        if (replica.getNodeName().equals(nodeName)) {
-          fromReplica = replica.getStr(ZkStateReader.CORE_NAME_PROP);
-
-          // found local replica, but is it Active?
-          if (replica.getState() != Replica.State.ACTIVE)
-            throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
-                "SolrCloud join: "+fromIndex+" has a local replica ("+fromReplica+
-                    ") on "+nodeName+", but it is "+replica.getState());
-
-          break;
-        }
-      }
-    }
-
-    if (fromReplica == null)
-      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST,
-          "SolrCloud join: No active replicas for "+fromIndex+
-              " found in node " + nodeName);
-
-    return fromReplica;
   }
 }
 
@@ -204,7 +135,11 @@ class JoinQuery extends Query {
   }
 
   @Override
-  public Weight createWeight(IndexSearcher searcher, boolean needsScores) throws IOException {
+  public void extractTerms(Set terms) {
+  }
+
+  @Override
+  public Weight createWeight(IndexSearcher searcher) throws IOException {
     return new JoinQueryWeight((SolrIndexSearcher)searcher);
   }
 
@@ -218,7 +153,6 @@ class JoinQuery extends Query {
     ResponseBuilder rb;
 
     public JoinQueryWeight(SolrIndexSearcher searcher) {
-      super(JoinQuery.this);
       this.fromSearcher = searcher;
       SolrRequestInfo info = SolrRequestInfo.getRequestInfo();
       if (info != null) {
@@ -276,7 +210,9 @@ class JoinQuery extends Query {
     }
 
     @Override
-    public void extractTerms(Set<org.apache.lucene.index.Term> terms) {}
+    public Query getQuery() {
+      return JoinQuery.this;
+    }
 
     @Override
     public float getValueForNormalization() throws IOException {
@@ -378,8 +314,8 @@ class JoinQuery extends Query {
       BytesRef prefix = prefixStr == null ? null : new BytesRef(prefixStr);
 
       BytesRef term = null;
-      TermsEnum  termsEnum = terms.iterator();
-      TermsEnum  toTermsEnum = toTerms.iterator();
+      TermsEnum  termsEnum = terms.iterator(null);
+      TermsEnum  toTermsEnum = toTerms.iterator(null);
       SolrIndexSearcher.DocsEnumState fromDeState = null;
       SolrIndexSearcher.DocsEnumState toDeState = null;
 
@@ -398,14 +334,14 @@ class JoinQuery extends Query {
       fromDeState.fieldName = fromField;
       fromDeState.liveDocs = fromLiveDocs;
       fromDeState.termsEnum = termsEnum;
-      fromDeState.postingsEnum = null;
+      fromDeState.docsEnum = null;
       fromDeState.minSetSizeCached = minDocFreqFrom;
 
       toDeState = new SolrIndexSearcher.DocsEnumState();
       toDeState.fieldName = toField;
       toDeState.liveDocs = toLiveDocs;
       toDeState.termsEnum = toTermsEnum;
-      toDeState.postingsEnum = null;
+      toDeState.docsEnum = null;
       toDeState.minSetSizeCached = minDocFreqTo;
 
       while (term != null) {
@@ -421,18 +357,18 @@ class JoinQuery extends Query {
         if (freq < minDocFreqFrom) {
           fromTermDirectCount++;
           // OK to skip liveDocs, since we check for intersection with docs matching query
-          fromDeState.postingsEnum = fromDeState.termsEnum.postings(null, fromDeState.postingsEnum, PostingsEnum.NONE);
-          PostingsEnum postingsEnum = fromDeState.postingsEnum;
+          fromDeState.docsEnum = fromDeState.termsEnum.docs(null, fromDeState.docsEnum, DocsEnum.FLAG_NONE);
+          DocsEnum docsEnum = fromDeState.docsEnum;
 
-          if (postingsEnum instanceof MultiPostingsEnum) {
-            MultiPostingsEnum.EnumWithSlice[] subs = ((MultiPostingsEnum) postingsEnum).getSubs();
-            int numSubs = ((MultiPostingsEnum) postingsEnum).getNumSubs();
+          if (docsEnum instanceof MultiDocsEnum) {
+            MultiDocsEnum.EnumWithSlice[] subs = ((MultiDocsEnum)docsEnum).getSubs();
+            int numSubs = ((MultiDocsEnum)docsEnum).getNumSubs();
             outer: for (int subindex = 0; subindex<numSubs; subindex++) {
-              MultiPostingsEnum.EnumWithSlice sub = subs[subindex];
-              if (sub.postingsEnum == null) continue;
+              MultiDocsEnum.EnumWithSlice sub = subs[subindex];
+              if (sub.docsEnum == null) continue;
               int base = sub.slice.start;
               int docid;
-              while ((docid = sub.postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+              while ((docid = sub.docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                 if (fastForRandomSet.exists(docid+base)) {
                   intersects = true;
                   break outer;
@@ -441,7 +377,7 @@ class JoinQuery extends Query {
             }
           } else {
             int docid;
-            while ((docid = postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+            while ((docid = docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
               if (fastForRandomSet.exists(docid)) {
                 intersects = true;
                 break;
@@ -486,25 +422,25 @@ class JoinQuery extends Query {
               toTermDirectCount++;
 
               // need to use liveDocs here so we don't map to any deleted ones
-              toDeState.postingsEnum = toDeState.termsEnum.postings(toDeState.liveDocs, toDeState.postingsEnum, PostingsEnum.NONE);
-              PostingsEnum postingsEnum = toDeState.postingsEnum;
+              toDeState.docsEnum = toDeState.termsEnum.docs(toDeState.liveDocs, toDeState.docsEnum, DocsEnum.FLAG_NONE);
+              DocsEnum docsEnum = toDeState.docsEnum;              
 
-              if (postingsEnum instanceof MultiPostingsEnum) {
-                MultiPostingsEnum.EnumWithSlice[] subs = ((MultiPostingsEnum) postingsEnum).getSubs();
-                int numSubs = ((MultiPostingsEnum) postingsEnum).getNumSubs();
+              if (docsEnum instanceof MultiDocsEnum) {
+                MultiDocsEnum.EnumWithSlice[] subs = ((MultiDocsEnum)docsEnum).getSubs();
+                int numSubs = ((MultiDocsEnum)docsEnum).getNumSubs();
                 for (int subindex = 0; subindex<numSubs; subindex++) {
-                  MultiPostingsEnum.EnumWithSlice sub = subs[subindex];
-                  if (sub.postingsEnum == null) continue;
+                  MultiDocsEnum.EnumWithSlice sub = subs[subindex];
+                  if (sub.docsEnum == null) continue;
                   int base = sub.slice.start;
                   int docid;
-                  while ((docid = sub.postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                  while ((docid = sub.docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                     resultListDocs++;
                     resultBits.set(docid + base);
                   }
                 }
               } else {
                 int docid;
-                while ((docid = postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+                while ((docid = docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
                   resultListDocs++;
                   resultBits.set(docid);
                 }

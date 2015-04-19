@@ -23,7 +23,6 @@ import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.grouping.GroupDocs;
 import org.apache.lucene.search.grouping.TopGroups;
 import org.apache.lucene.util.BytesRef;
@@ -142,13 +141,7 @@ public class TopGroupsResultTransformer implements ShardResultTransformer<List<C
           }
           scoreDocs[j++] = new ShardDoc(score, sortValues, uniqueId, shard);
         }
-        final TopDocs topDocs;
-        if (sortWithinGroup == null) {
-          topDocs = new TopDocs(totalHits, scoreDocs, maxScore);
-        } else {
-          topDocs = new TopFieldDocs(totalHits, scoreDocs, sortWithinGroup.getSort(), maxScore);
-        }
-        result.put(key, new QueryCommandResult(topDocs, matches));
+        result.put(key, new QueryCommandResult(new TopDocs(totalHits, scoreDocs, maxScore), matches));
         continue;
       }
 

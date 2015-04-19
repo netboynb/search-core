@@ -99,6 +99,7 @@ import org.apache.solr.schema.SimilarityFactory;
  *        </ul>
  * </ol>
  * <p>
+ * <p>
  * Optional settings:
  * <ul>
  *   <li>discountOverlaps (bool): Sets

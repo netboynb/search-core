@@ -17,8 +17,11 @@ package org.apache.solr.request;
  * limitations under the License.
  */
 
-import org.apache.lucene.index.DocValues;
+import java.io.IOException;
+import java.util.List;
+
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.MultiDocValues.MultiSortedDocValues;
 import org.apache.lucene.index.MultiDocValues.MultiSortedSetDocValues;
 import org.apache.lucene.index.MultiDocValues.OrdinalMap;
@@ -40,9 +43,6 @@ import org.apache.solr.search.DocSet;
 import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.util.LongPriorityQueue;
 
-import java.io.IOException;
-import java.util.List;
-
 /**
  * Computes term facets for docvalues field (single or multivalued).
  * <p>
@@ -58,7 +58,7 @@ import java.util.List;
 public class DocValuesFacets {
   private DocValuesFacets() {}
   
-  public static NamedList<Integer> getCounts(SolrIndexSearcher searcher, DocSet docs, String fieldName, int offset, int limit, int mincount, boolean missing, String sort, String prefix, String contains, boolean ignoreCase) throws IOException {
+  public static NamedList<Integer> getCounts(SolrIndexSearcher searcher, DocSet docs, String fieldName, int offset, int limit, int mincount, boolean missing, String sort, String prefix) throws IOException {
     SchemaField schemaField = searcher.getSchema().getField(fieldName);
     FieldType ft = schemaField.getType();
     NamedList<Integer> res = new NamedList<>();
@@ -97,7 +97,7 @@ public class DocValuesFacets {
       prefixRef = new BytesRefBuilder();
       prefixRef.copyChars(prefix);
     }
-    
+
     int startTermIndex, endTermIndex;
     if (prefix!=null) {
       startTermIndex = (int) si.lookupTerm(prefixRef.get());
@@ -170,12 +170,6 @@ public class DocValuesFacets {
         int min=mincount-1;  // the smallest value in the top 'N' values
         for (int i=(startTermIndex==-1)?1:0; i<nTerms; i++) {
           int c = counts[i];
-          if (contains != null) {
-            final BytesRef term = si.lookupOrd(startTermIndex+i);
-            if (!SimpleFacets.contains(term.utf8ToString(), contains, ignoreCase)) {
-              continue;
-            }
-          }
           if (c>min) {
             // NOTE: we use c>min rather than c>=min as an optimization because we are going in
             // index order, so we already know that the keys are ordered.  This can be very
@@ -209,28 +203,18 @@ public class DocValuesFacets {
       } else {
         // add results in index order
         int i=(startTermIndex==-1)?1:0;
-        if (mincount<=0 && contains == null) {
-          // if mincount<=0 and we're not examining the values for contains, then
-          // we won't discard any terms and we know exactly where to start.
+        if (mincount<=0) {
+          // if mincount<=0, then we won't discard any terms and we know exactly
+          // where to start.
           i+=off;
           off=0;
         }
 
         for (; i<nTerms; i++) {          
           int c = counts[i];
-          if (c<mincount) continue;
-          BytesRef term = null;
-          if (contains != null) {
-            term = si.lookupOrd(startTermIndex+i);
-            if (!SimpleFacets.contains(term.utf8ToString(), contains, ignoreCase)) {
-              continue;
-            }
-          }
-          if (--off>=0) continue;
+          if (c<mincount || --off>=0) continue;
           if (--lim<0) break;
-          if (term == null) {
-            term = si.lookupOrd(startTermIndex+i);
-          }
+          final BytesRef term = si.lookupOrd(startTermIndex+i);
           ft.indexedToReadable(term, charsRef);
           res.add(charsRef.toString(), c);
         }

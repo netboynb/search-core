@@ -19,9 +19,6 @@ package org.apache.solr.cloud;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.io.FileUtils;
@@ -29,12 +26,10 @@ import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.Slice;
-import org.apache.solr.common.cloud.SolrZkClient;
 import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.CoreDescriptor;
 import org.apache.solr.core.SolrResourceLoader;
-import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,7 +89,7 @@ public class CloudUtil {
   /**
    * Returns a displayable unified path to the given resource. For non-solrCloud that will be the
    * same as getConfigDir, but for Cloud it will be getConfigSetZkPath ending in a /
-   * <p>
+   * <p/>
    * <b>Note:</b> Do not use this to generate a valid file path, but for debug printing etc
    * @param loader Resource loader instance
    * @return a String of path to resource
@@ -104,29 +99,4 @@ public class CloudUtil {
             ((ZkSolrResourceLoader) loader).getConfigSetZkPath() + "/" :
             loader.getConfigDir();
   }
-
-  /**Read the list of public keys from ZK
-   */
-
-  public static Map<String, byte[]> getTrustedKeys(SolrZkClient zk, String dir) {
-    Map<String, byte[]> result = new HashMap<>();
-    try {
-      List<String> children = zk.getChildren("/keys/" + dir, null, true);
-      for (String key : children) {
-        if (key.endsWith(".der")) result.put(key, zk.getData("/keys/" + dir +
-            "/" + key, null, null, true));
-      }
-    } catch (KeeperException.NoNodeException e) {
-      log.info("Error fetching key names");
-      return Collections.EMPTY_MAP;
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new SolrException(ErrorCode.SERVER_ERROR,"Unable to read crypto keys",e );
-    } catch (KeeperException e) {
-      throw new SolrException(ErrorCode.SERVER_ERROR,"Unable to read crypto keys",e );
-    }
-    return result;
-
-  }
-
 }

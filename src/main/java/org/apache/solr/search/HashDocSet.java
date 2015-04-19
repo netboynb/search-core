@@ -17,12 +17,7 @@
 
 package org.apache.solr.search;
 
-import java.util.Collection;
-import java.util.Collections;
-
-import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.BitUtil;
-import org.apache.lucene.util.RamUsageEstimator;
 
 
 /**
@@ -35,8 +30,6 @@ import org.apache.lucene.util.RamUsageEstimator;
  * @since solr 0.9
  */
 public final class HashDocSet extends DocSetBase {
-  private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(HashDocSet.class) + RamUsageEstimator.NUM_BYTES_ARRAY_HEADER;
-
   /** Default load factor to use for HashDocSets.  We keep track of the inverse
    *  since multiplication is so much faster than division.  The default
    *  is 1.0f / 0.75f
@@ -52,6 +45,7 @@ public final class HashDocSet extends DocSetBase {
   private final static int EMPTY=-1;
   private final int[] table;
   private final int size;
+
   private final int mask;
 
   public HashDocSet(HashDocSet set) {
@@ -159,6 +153,11 @@ public final class HashDocSet extends DocSetBase {
         return 0.0f;
       }
     };
+  }
+
+  @Override
+  public long memSize() {
+    return (table.length<<2) + 20;
   }
 
   @Override
@@ -297,15 +296,4 @@ public final class HashDocSet extends DocSetBase {
 
   // don't implement andNotSize() and unionSize() on purpose... they are implemented
   // in BaseDocSet in terms of intersectionSize().
-
-
-  @Override
-  public long ramBytesUsed() {
-    return BASE_RAM_BYTES_USED + (table.length<<2);
-  }
-
-  @Override
-  public Collection<Accountable> getChildResources() {
-    return Collections.emptyList();
-  }
 }

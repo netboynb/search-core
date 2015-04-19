@@ -17,22 +17,22 @@
 
 package org.apache.solr.search;
 
-import javax.xml.xpath.XPathConstants;
+import org.apache.solr.common.util.StrUtils;
+import org.apache.solr.core.MapSerializable;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.solr.common.SolrException;
-import org.apache.solr.common.util.StrUtils;
-import org.apache.solr.core.MapSerializable;
+import org.apache.solr.util.DOMUtil;
 import org.apache.solr.core.SolrConfig;
 import org.apache.solr.core.SolrResourceLoader;
-import org.apache.solr.util.DOMUtil;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
 
-import static org.apache.solr.common.params.CommonParams.NAME;
+import javax.xml.xpath.XPathConstants;
 
 /**
  * Contains the knowledge of how cache config is
@@ -106,9 +106,9 @@ public class CacheConfig implements MapSerializable{
       }
       config.args = mapCopy;
     }
-    String nameAttr = config.args.get(NAME);  // OPTIONAL
+    String nameAttr = config.args.get("name");  // OPTIONAL
     if (nameAttr==null) {
-      config.args.put(NAME, config.nodeName);
+      config.args.put("name",config.nodeName);
     }
 
     SolrResourceLoader loader = solrConfig.getResourceLoader();

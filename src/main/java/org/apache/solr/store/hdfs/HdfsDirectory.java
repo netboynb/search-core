@@ -60,7 +60,7 @@ public class HdfsDirectory extends BaseDirectory {
     super(lockFactory);
     this.hdfsDirPath = hdfsDirPath;
     this.configuration = configuration;
-    fileSystem = FileSystem.get(hdfsDirPath.toUri(), configuration);
+    fileSystem = FileSystem.newInstance(hdfsDirPath.toUri(), configuration);
     fileContext = FileContext.getFileContext(hdfsDirPath.toUri(), configuration);
     
     while (true) {
@@ -168,11 +168,13 @@ public class HdfsDirectory extends BaseDirectory {
       return new String[] {};
     }
     for (FileStatus status : listStatus) {
-      files.add(status.getPath().getName());
+      if (!status.isDirectory()) {
+        files.add(status.getPath().getName());
+      }
     }
     return getNormalNames(files);
   }
-
+  
   public Path getHdfsDirPath() {
     return hdfsDirPath;
   }

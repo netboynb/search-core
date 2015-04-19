@@ -17,11 +17,8 @@
 
 package org.apache.solr.search.join;
 
-import java.io.IOException;
-import java.util.Set;
-
-import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
@@ -29,6 +26,9 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.Bits;
+
+import java.io.IOException;
+import java.util.Set;
 
 public class IgnoreAcceptDocsQuery extends Query {
   private final Query q;
@@ -48,8 +48,13 @@ public class IgnoreAcceptDocsQuery extends Query {
   }
 
   @Override
-  public Weight createWeight(IndexSearcher searcher, boolean needsScores) throws IOException {
-    Weight inner = q.createWeight(searcher, needsScores);
+  public String toString() {
+    return q.toString();
+  }
+
+  @Override
+  public Weight createWeight(IndexSearcher searcher) throws IOException {
+    Weight inner = q.createWeight(searcher);
     return new IADWeight(inner);
   }
 
@@ -57,18 +62,17 @@ public class IgnoreAcceptDocsQuery extends Query {
     Weight w;
 
     IADWeight(Weight delegate) {
-      super(q);
       this.w = delegate;
-    }
-
-    @Override
-    public void extractTerms(Set<Term> terms) {
-      w.extractTerms(terms);
     }
 
     @Override
     public Explanation explain(LeafReaderContext context, int doc) throws IOException {
       return w.explain(context, doc);
+    }
+
+    @Override
+    public Query getQuery() {
+      return q;
     }
 
     @Override
@@ -92,6 +96,11 @@ public class IgnoreAcceptDocsQuery extends Query {
     Query n = q.rewrite(reader);
     if (q == n) return this;
     return new IgnoreAcceptDocsQuery(n);
+  }
+
+  @Override
+  public void extractTerms(Set<Term> terms) {
+    q.extractTerms(terms);
   }
 
   @Override

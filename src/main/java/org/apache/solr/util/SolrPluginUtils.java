@@ -59,8 +59,6 @@ import org.apache.solr.handler.component.ShardRequest;
 import org.apache.solr.highlight.SolrHighlighter;
 import org.apache.solr.parser.QueryParser;
 import org.apache.solr.request.SolrQueryRequest;
-import org.apache.solr.request.SolrRequestHandler;
-import org.apache.solr.request.json.RequestUtil;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
@@ -91,7 +89,7 @@ import org.apache.solr.search.SyntaxError;
  * default parameter settings.
  */
 public class SolrPluginUtils {
-
+  
 
   /**
    * Map containing all the possible purposes codes of a request as key and
@@ -133,16 +131,12 @@ public class SolrPluginUtils {
    * @param appends values to be appended to those from the request (or defaults) when dealing with multi-val params, or treated as another layer of defaults for singl-val params.
    * @param invariants values which will be used instead of any request, or default values, regardless of context.
    */
-  public static void setDefaults(SolrQueryRequest req, SolrParams defaults, SolrParams appends, SolrParams invariants) {
-    setDefaults(null, req, defaults, appends, invariants);
-  }
-
-  public static void setDefaults(SolrRequestHandler handler, SolrQueryRequest req, SolrParams defaults,
+  public static void setDefaults(SolrQueryRequest req, SolrParams defaults,
                                  SolrParams appends, SolrParams invariants) {
 
-    List<String> paramNames = null;
+    List<String> paramNames =null;
     String useParams = req.getParams().get(RequestParams.USEPARAM);
-    if (useParams != null && !useParams.isEmpty()) {
+    if(useParams!=null && !useParams.isEmpty()){
       // now that we have expanded the request macro useParams with the actual values
       // it makes no sense to keep it visible now on.
       // distrib request sends all params to the nodes down the line and
@@ -150,20 +144,25 @@ public class SolrPluginUtils {
       // which is not desirable. At the same time, because we send the useParams
       // value as an empty string to other nodes we get the desired benefit of
       // overriding the useParams specified in the requestHandler directly
-      req.setParams(SolrParams.wrapDefaults(maskUseParams, req.getParams()));
+      req.setParams(SolrParams.wrapDefaults(maskUseParams,req.getParams()));
     }
-    if (useParams == null) useParams = (String) req.getContext().get(RequestParams.USEPARAM);
-    if (useParams != null && !useParams.isEmpty()) paramNames = StrUtils.splitSmart(useParams, ',');
-    if (paramNames != null) {
-      for (String name : paramNames) {
-        SolrParams requestParams = req.getCore().getSolrConfig().getRequestParams().getParams(name);
-        if (requestParams != null) {
-          defaults = SolrParams.wrapDefaults(requestParams, defaults);
+    if(useParams == null) useParams = (String) req.getContext().get(RequestParams.USEPARAM);
+    if(useParams !=null && !useParams.isEmpty()) paramNames = StrUtils.splitSmart(useParams, ',');
+    if(paramNames != null){
+        for (String name : paramNames) {
+          SolrParams requestParams = req.getCore().getSolrConfig().getRequestParams().getParams(name);
+          if(requestParams !=null){
+            defaults = SolrParams.wrapDefaults(requestParams , defaults);
+          }
         }
       }
-    }
 
-    RequestUtil.processParams(handler, req, defaults, appends, invariants);
+      SolrParams p = req.getParams();
+      p = SolrParams.wrapDefaults(p, defaults);
+      p = SolrParams.wrapAppended(p, appends);
+      p = SolrParams.wrapDefaults(invariants, p);
+
+      req.setParams(p);
   }
 
 
@@ -994,7 +993,9 @@ public class SolrPluginUtils {
         Class pClazz = method.getParameterTypes()[0];
         Object val = entry.getValue();
         method.invoke(bean, val);
-      } catch (InvocationTargetException | IllegalAccessException e1) {
+      } catch (InvocationTargetException e1) {
+        throw new RuntimeException("Error invoking setter " + setterName + " on class : " + clazz.getName(), e1);
+      } catch (IllegalAccessException e1) {
         throw new RuntimeException("Error invoking setter " + setterName + " on class : " + clazz.getName(), e1);
       }
     }

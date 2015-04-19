@@ -160,8 +160,9 @@ public class ExactStatsCache extends StatsCache {
   public void returnLocalStats(ResponseBuilder rb, SolrIndexSearcher searcher) {
     Query q = rb.getQuery();
     try {
+      q = q.rewrite(searcher.getIndexReader());
       HashSet<Term> terms = new HashSet<Term>();
-      searcher.createNormalizedWeight(q, true).extractTerms(terms);
+      q.extractTerms(terms);
       IndexReaderContext context = searcher.getTopReaderContext();
       HashMap<String,TermStats> statsMap = new HashMap<String,TermStats>();
       HashMap<String,CollectionStats> colMap = new HashMap<String,CollectionStats>();

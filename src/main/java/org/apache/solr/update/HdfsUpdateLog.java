@@ -44,8 +44,7 @@ import org.apache.solr.util.HdfsUtil;
 /** @lucene.experimental */
 public class HdfsUpdateLog extends UpdateLog {
   
-  private final Object fsLock = new Object();
-  private FileSystem fs;
+  private volatile FileSystem fs;
   private volatile Path tlogDir;
   private final String confDir;
   
@@ -71,7 +70,9 @@ public class HdfsUpdateLog extends UpdateLog {
     if (future != null) {
       try {
         future.get();
-      } catch (InterruptedException | ExecutionException e) {
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      } catch (ExecutionException e) {
         throw new RuntimeException(e);
       }
     }
@@ -84,12 +85,7 @@ public class HdfsUpdateLog extends UpdateLog {
     
     defaultSyncLevel = SyncLevel.getSyncLevel((String) info.initArgs
         .get("syncLevel"));
-
-    numRecordsToKeep = objToInt(info.initArgs.get("numRecordsToKeep"), 100);
-    maxNumLogsToKeep = objToInt(info.initArgs.get("maxNumLogsToKeep"), 10);
-
-    log.info("Initializing HdfsUpdateLog: dataDir={} defaultSyncLevel={} numRecordsToKeep={} maxNumLogsToKeep={}",
-        dataDir, defaultSyncLevel, numRecordsToKeep, maxNumLogsToKeep);
+    
   }
 
   private Configuration getConf() {
@@ -97,7 +93,7 @@ public class HdfsUpdateLog extends UpdateLog {
     if (confDir != null) {
       HdfsUtil.addHdfsResources(conf, confDir);
     }
-    conf.setBoolean("fs.hdfs.impl.disable.cache", true);
+    
     return conf;
   }
   
@@ -107,42 +103,51 @@ public class HdfsUpdateLog extends UpdateLog {
     // ulogDir from CoreDescriptor overrides
     String ulogDir = core.getCoreDescriptor().getUlogDir();
 
-    this.uhandler = uhandler;
+    if (ulogDir != null) {
+      dataDir = ulogDir;
+    }
+    if (dataDir == null || dataDir.length()==0) {
+      dataDir = core.getDataDir();
+    }
     
-    synchronized (fsLock) {
-      // just like dataDir, we do not allow
-      // moving the tlog dir on reload
-      if (fs == null) {
-        if (ulogDir != null) {
-          dataDir = ulogDir;
-        }
-        if (dataDir == null || dataDir.length() == 0) {
-          dataDir = core.getDataDir();
-        }
-        
-        if (!core.getDirectoryFactory().isAbsolute(dataDir)) {
-          try {
-            dataDir = core.getDirectoryFactory().getDataHome(core.getCoreDescriptor());
-          } catch (IOException e) {
-            throw new SolrException(ErrorCode.SERVER_ERROR, e);
-          }
-        }
-        
-        try {
-          fs = FileSystem.get(new Path(dataDir).toUri(), getConf());
-        } catch (IOException e) {
-          throw new SolrException(ErrorCode.SERVER_ERROR, e);
-        }
-      } else {
-        if (debug) {
-          log.debug("UpdateHandler init: tlogDir=" + tlogDir + ", next id=" + id,
-              " this is a reopen or double init ... nothing else to do.");
-        }
-        versionInfo.reload();
-        return;
+    if (!core.getDirectoryFactory().isAbsolute(dataDir)) {
+      try {
+        dataDir = core.getDirectoryFactory().getDataHome(core.getCoreDescriptor());
+      } catch (IOException e) {
+        throw new SolrException(ErrorCode.SERVER_ERROR, e);
       }
     }
     
+    FileSystem oldFs = fs;
+    
+    try {
+      fs = FileSystem.newInstance(new Path(dataDir).toUri(), getConf());
+    } catch (IOException e) {
+      throw new SolrException(ErrorCode.SERVER_ERROR, e);
+    }
+    
+    try {
+      if (oldFs != null) {
+        oldFs.close();
+      }
+    } catch (IOException e) {
+      throw new SolrException(ErrorCode.SERVER_ERROR, e);
+    }
+    
+    this.uhandler = uhandler;
+    
+    if (dataDir.equals(lastDataDir)) {
+      if (debug) {
+        log.debug("UpdateHandler init: tlogDir=" + tlogDir + ", next id=" + id,
+            " this is a reopen... nothing else to do.");
+      }
+      
+      versionInfo.reload();
+      
+      // on a normal reopen, we currently shouldn't have to do anything
+      return;
+    }
+    lastDataDir = dataDir;
     tlogDir = new Path(dataDir, TLOG_NAME);
     while (true) {
       try {
@@ -222,7 +227,7 @@ public class HdfsUpdateLog extends UpdateLog {
     // non-complete tlogs.
     HdfsUpdateLog.RecentUpdates startingUpdates = getRecentUpdates();
     try {
-      startingVersions = startingUpdates.getVersions(getNumRecordsToKeep());
+      startingVersions = startingUpdates.getVersions(numRecordsToKeep);
       startingOperation = startingUpdates.getLatestOperation();
       
       // populate recent deletes list (since we can't get that info from the
@@ -264,6 +269,8 @@ public class HdfsUpdateLog extends UpdateLog {
           return path.getName().startsWith(prefix);
         }
       });
+    } catch (FileNotFoundException e) {
+      throw new RuntimeException(e);
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -295,15 +302,8 @@ public class HdfsUpdateLog extends UpdateLog {
     if (tlog == null) {
       String newLogName = String.format(Locale.ROOT, LOG_FILENAME_PATTERN,
           TLOG_NAME, id);
-      HdfsTransactionLog ntlog = new HdfsTransactionLog(fs, new Path(tlogDir, newLogName),
+      tlog = new HdfsTransactionLog(fs, new Path(tlogDir, newLogName),
           globalStrings);
-      tlog = ntlog;
-      
-      if (tlog != ntlog) {
-        ntlog.deleteOnClose = false;
-        ntlog.decref();
-        ntlog.forceClose();
-      }
     }
   }
   

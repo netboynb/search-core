@@ -183,7 +183,8 @@ public class PivotFacetValue {
     }
     if (null != statsValues) {
       newList.add(PivotListEntry.STATS.getName(), 
-                  StatsComponent.convertToResponse(statsValues));
+                  // for pivots, we *always* include requested stats - even if 'empty'
+                  StatsComponent.convertToResponse(true, statsValues));
     }
     return newList;
   }      

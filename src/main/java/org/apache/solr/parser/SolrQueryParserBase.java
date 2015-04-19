@@ -29,7 +29,6 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.search.AutomatonQuery;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MultiPhraseQuery;
@@ -79,7 +78,7 @@ public abstract class SolrQueryParserBase extends QueryBuilder {
   /** The default operator that parser uses to combine query terms */
   Operator operator = OR_OPERATOR;
 
-  MultiTermQuery.RewriteMethod multiTermRewriteMethod = MultiTermQuery.CONSTANT_SCORE_REWRITE;
+  MultiTermQuery.RewriteMethod multiTermRewriteMethod = MultiTermQuery.CONSTANT_SCORE_FILTER_REWRITE;
   boolean allowLeadingWildcard = true;
 
   String defaultField;
@@ -151,9 +150,13 @@ public abstract class SolrQueryParserBase extends QueryBuilder {
       Query res = TopLevelQuery(null);  // pass null so we can tell later if an explicit field was provided or not
       return res!=null ? res : newBooleanQuery(false);
     }
-    catch (ParseException | TokenMgrError tme) {
+    catch (ParseException tme) {
       throw new SyntaxError("Cannot parse '" +query+ "': " + tme.getMessage(), tme);
-    } catch (BooleanQuery.TooManyClauses tmc) {
+    }
+    catch (TokenMgrError tme) {
+      throw new SyntaxError("Cannot parse '" +query+ "': " + tme.getMessage(), tme);
+    }
+    catch (BooleanQuery.TooManyClauses tmc) {
       throw new SyntaxError("Cannot parse '" +query+ "': too many boolean clauses", tmc);
     }
   }
@@ -272,7 +275,7 @@ public abstract class SolrQueryParserBase extends QueryBuilder {
    * Sets the boolean operator of the QueryParser.
    * In default mode (<code>OR_OPERATOR</code>) terms without any modifiers
    * are considered optional: for example <code>capital of Hungary</code> is equal to
-   * <code>capital OR of OR Hungary</code>.<br>
+   * <code>capital OR of OR Hungary</code>.<br/>
    * In <code>AND_OPERATOR</code> mode terms are considered to be in conjunction: the
    * above mentioned query is parsed as <code>capital AND of AND Hungary</code>
    */
@@ -291,7 +294,7 @@ public abstract class SolrQueryParserBase extends QueryBuilder {
 
 
   /**
-   * By default QueryParser uses {@link org.apache.lucene.search.MultiTermQuery#CONSTANT_SCORE_REWRITE}
+   * By default QueryParser uses {@link org.apache.lucene.search.MultiTermQuery#CONSTANT_SCORE_FILTER_REWRITE}
    * when creating a PrefixQuery, WildcardQuery or RangeQuery. This implementation is generally preferable because it
    * a) Runs faster b) Does not have the scarcity of terms unduly influence score
    * c) avoids any "TooManyBooleanClauses" exception.
@@ -553,28 +556,13 @@ public abstract class SolrQueryParserBase extends QueryBuilder {
 
   // called from parser
   Query handleBoost(Query q, Token boost) {
-    // q==null check is to avoid boosting null queries, such as those caused by stop words
-    if (boost == null || boost.image.length()==0 || q == null) {
-      return q;
-    }
-
-    if (boost.image.charAt(0) == '=') {
-      // syntax looks like foo:x^=3
-      float val = Float.parseFloat(boost.image.substring(1));
-      Query newQ = q;
-      if (// q instanceof FilterQuery ||  // TODO: fix this when FilterQuery is introduced to avoid needless wrapping: SOLR-7219
-          q instanceof ConstantScoreQuery) {
-        newQ.setBoost(val);
-      } else {
-        newQ = new ConstantScoreQuery(q);
-        newQ.setBoost(val);
+    if (boost != null) {
+      float boostVal = Float.parseFloat(boost.image);
+      // avoid boosting null queries, such as those caused by stop words
+      if (q != null) {
+        q.setBoost(q.getBoost() * boostVal);
       }
-      return newQ;
     }
-
-    float boostVal = Float.parseFloat(boost.image);
-    q.setBoost(q.getBoost() * boostVal);
-
     return q;
   }
 

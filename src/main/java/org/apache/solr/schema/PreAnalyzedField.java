@@ -33,6 +33,7 @@ import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.SortedSetFieldSource;
 import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.SortedSetSortField;
 import org.apache.lucene.uninverting.UninvertingReader.Type;
 import org.apache.lucene.util.AttributeFactory;
 import org.apache.lucene.util.AttributeSource;
@@ -43,8 +44,6 @@ import org.apache.solr.search.QParser;
 import org.apache.solr.search.Sorting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static org.apache.solr.common.params.CommonParams.JSON;
 
 /**
  * Pre-analyzed field type provides a way to index a serialized token stream,
@@ -72,7 +71,7 @@ public class PreAnalyzedField extends FieldType {
       parser = new JsonPreAnalyzedParser();
     } else {
       // short name
-      if (JSON.equalsIgnoreCase(implName)) {
+      if ("json".equalsIgnoreCase(implName)) {
         parser = new JsonPreAnalyzedParser();
       } else if ("simple".equalsIgnoreCase(implName)) {
         parser = new SimplePreAnalyzedParser();
@@ -179,7 +178,6 @@ public class PreAnalyzedField extends FieldType {
     newType.setStoreTermVectors(field.storeTermVector());
     newType.setStoreTermVectorOffsets(field.storeTermOffsets());
     newType.setStoreTermVectorPositions(field.storeTermPositions());
-    newType.setStoreTermVectorPayloads(field.storeTermPayloads());
     return newType;
   }
   

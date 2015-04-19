@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+/**
+ */
+
 package org.apache.solr.update;
 
 import org.apache.lucene.document.Document;
@@ -654,7 +657,9 @@ public class DirectUpdateHandler2 extends UpdateHandler implements SolrCoreState
     if (waitSearcher!=null && waitSearcher[0] != null) {
        try {
         waitSearcher[0].get();
-      } catch (InterruptedException | ExecutionException e) {
+      } catch (InterruptedException e) {
+        SolrException.log(log,e);
+      } catch (ExecutionException e) {
         SolrException.log(log,e);
       }
     }

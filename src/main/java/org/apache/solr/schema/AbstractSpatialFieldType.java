@@ -113,13 +113,11 @@ public abstract class AbstractSpatialFieldType<T extends SpatialStrategy> extend
   protected void init(IndexSchema schema, Map<String, String> args) {
     super.init(schema, args);
 
-    if(ctx==null) { // subclass can set this directly
-      //Solr expects us to remove the parameters we've used.
-      MapListener<String, String> argsWrap = new MapListener<>(args);
-      ctx = SpatialContextFactory.makeSpatialContext(argsWrap, schema.getResourceLoader().getClassLoader());
-      args.keySet().removeAll(argsWrap.getSeenKeys());
-    }
-    
+    //Solr expects us to remove the parameters we've used.
+    MapListener<String, String> argsWrap = new MapListener<>(args);
+    ctx = SpatialContextFactory.makeSpatialContext(argsWrap, schema.getResourceLoader().getClassLoader());
+    args.keySet().removeAll(argsWrap.getSeenKeys());
+
     final String unitsErrMsg = "units parameter is deprecated, please use distanceUnits instead for field types with class " +
         getClass().getSimpleName();
     this.units = args.remove("units");//deprecated
@@ -244,7 +242,7 @@ public abstract class AbstractSpatialFieldType<T extends SpatialStrategy> extend
    * Returns a String version of a shape to be used for the stored value. This method in Solr is only called if for some
    * reason a Shape object is passed to the field type (perhaps via a custom UpdateRequestProcessor),
    * *and* the field is marked as stored.  <em>The default implementation throws an exception.</em>
-   * <p>
+   * <p/>
    * Spatial4j 0.4 is probably the last release to support SpatialContext.toString(shape) but it's deprecated with no
    * planned replacement.  Shapes do have a toString() method but they are generally internal/diagnostic and not
    * standard WKT.
@@ -270,7 +268,7 @@ public abstract class AbstractSpatialFieldType<T extends SpatialStrategy> extend
   //--------------------------------------------------------------
 
   /**
-   * Implemented for compatibility with geofilt &amp; bbox query parsers:
+   * Implemented for compatibility with geofilt & bbox query parsers:
    * {@link SpatialQueryable}.
    */
   @Override

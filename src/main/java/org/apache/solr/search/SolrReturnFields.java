@@ -22,7 +22,6 @@ import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.QueryValueSource;
 import org.apache.lucene.search.Query;
 import org.apache.solr.common.SolrException;
-import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.MapSolrParams;
 import org.apache.solr.common.params.SolrParams;
@@ -152,7 +151,7 @@ public class SolrReturnFields extends ReturnFields {
   }
 
   // like getId, but also accepts dashes for legacy fields
-  public static String getFieldName(QueryParsing.StrParser sp) {
+  String getFieldName(QueryParsing.StrParser sp) {
     sp.eatws();
     int id_start = sp.pos;
     char ch;
@@ -262,13 +261,10 @@ public class SolrReturnFields extends ReturnFields {
           TransformerFactory factory = req.getCore().getTransformerFactory( augmenterName );
           if( factory != null ) {
             MapSolrParams augmenterParams = new MapSolrParams( augmenterArgs );
-            DocTransformer t = factory.create(disp, augmenterParams, req);
-            if(t!=null) {
-              augmenters.addTransformer( t );
-            }
+            augmenters.addTransformer( factory.create(disp, augmenterParams, req) );
           }
           else {
-            //throw new SolrException(ErrorCode.BAD_REQUEST, "Unknown DocTransformer: "+augmenterName);
+            // unknown transformer?
           }
           addField(field, disp, augmenters, true);
           continue;

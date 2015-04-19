@@ -18,14 +18,11 @@
 package org.apache.solr.handler.admin;
 
 import java.io.IOException;
-
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
-
-import static org.apache.solr.common.params.CommonParams.NAME;
 
 /**
  *
@@ -37,7 +34,7 @@ public class PropertiesRequestHandler extends RequestHandlerBase
   public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws IOException 
   {
     Object props = null;
-    String name = req.getParams().get(NAME);
+    String name = req.getParams().get( "name" );
     if( name != null ) {
       NamedList<String> p = new SimpleOrderedMap<>();
       p.add( name, System.getProperty(name) );

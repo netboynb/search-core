@@ -270,8 +270,8 @@ public class FileFloatSource extends ValueSource {
     BytesRefBuilder internalKey = new BytesRefBuilder();
 
     try {
-      TermsEnum termsEnum = MultiFields.getTerms(reader, idName).iterator();
-      PostingsEnum postingsEnum = null;
+      TermsEnum termsEnum = MultiFields.getTerms(reader, idName).iterator(null);
+      DocsEnum docsEnum = null;
 
       // removing deleted docs shouldn't matter
       // final Bits liveDocs = MultiFields.getLiveDocs(reader);
@@ -305,9 +305,9 @@ public class FileFloatSource extends ValueSource {
           continue;
         }
 
-        postingsEnum = termsEnum.postings(null, postingsEnum, PostingsEnum.NONE);
+        docsEnum = termsEnum.docs(null, docsEnum, DocsEnum.FLAG_NONE);
         int doc;
-        while ((doc = postingsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+        while ((doc = docsEnum.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
           vals[doc] = fval;
         }
       }

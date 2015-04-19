@@ -17,33 +17,12 @@ package org.apache.solr.schema;
  * limitations under the License.
  */
 
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.xpath.XPath;
-import javax.xml.xpath.XPathConstants;
-import javax.xml.xpath.XPathExpressionException;
-import javax.xml.xpath.XPathFactory;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-
 import org.apache.lucene.document.FieldType;
-import org.apache.lucene.document.NumericDocValuesField;
-import org.apache.lucene.document.SortedSetDocValuesField;
-import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.queries.function.ValueSource;
 import org.apache.lucene.queries.function.valuesource.EnumFieldSource;
-import org.apache.lucene.search.ConstantScoreQuery;
-import org.apache.lucene.search.DocValuesRangeQuery;
-import org.apache.lucene.search.NumericRangeQuery;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.*;
 import org.apache.lucene.uninverting.UninvertingReader.Type;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
@@ -60,6 +39,19 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
+
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 /***
  * Field type for support of string values with custom sort order.
@@ -134,7 +126,13 @@ public class EnumField extends PrimitiveFieldType {
           enumStringToIntMap.put(valueStr, i);
         }
       }
-      catch (ParserConfigurationException | XPathExpressionException | SAXException e) {
+      catch (ParserConfigurationException e) {
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Error parsing enums config.", e);
+      }
+      catch (SAXException e) {
+        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Error parsing enums config.", e);
+      }
+      catch (XPathExpressionException e) {
         throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Error parsing enums config.", e);
       }
     }
@@ -234,14 +232,6 @@ public class EnumField extends PrimitiveFieldType {
    * {@inheritDoc}
    */
   @Override
-  public FieldType.NumericType getNumericType() {
-    return FieldType.NumericType.INT;
-  }
-
-  /**
-   * {@inheritDoc}
-   */
-  @Override
   public Query getRangeQuery(QParser parser, SchemaField field, String min, String max, boolean minInclusive, boolean maxInclusive) {
     Integer minValue = stringValueToIntValue(min);
     Integer maxValue = stringValueToIntValue(max);
@@ -253,9 +243,9 @@ public class EnumField extends PrimitiveFieldType {
     Query query = null;
     final boolean matchOnly = field.hasDocValues() && !field.indexed();
     if (matchOnly) {
-      query = new ConstantScoreQuery(DocValuesRangeQuery.newLongRange(field.getName(),
-              min == null ? null : minValue.longValue(),
-              max == null ? null : maxValue.longValue(),
+      query = new ConstantScoreQuery(DocValuesRangeFilter.newIntRange(field.getName(),
+              min == null ? null : minValue,
+              max == null ? null : maxValue,
               minInclusive, maxInclusive));
     } else {
       query = NumericRangeQuery.newIntRange(field.getName(), DEFAULT_PRECISION_STEP,
@@ -271,7 +261,10 @@ public class EnumField extends PrimitiveFieldType {
    * {@inheritDoc}
    */
   @Override
-  public void checkSchemaField(SchemaField field) {
+  public void checkSchemaField(final SchemaField field) {
+    if (field.hasDocValues() && !field.multiValued() && !(field.isRequired() || field.getDefaultValue() != null)) {
+      throw new IllegalStateException("Field " + this + " has single-valued doc values enabled, but has no default value and is not required");
+    }
   }
 
   /**
@@ -396,7 +389,6 @@ public class EnumField extends PrimitiveFieldType {
     newType.setStoreTermVectors(field.storeTermVector());
     newType.setStoreTermVectorOffsets(field.storeTermOffsets());
     newType.setStoreTermVectorPositions(field.storeTermPositions());
-    newType.setStoreTermVectorPayloads(field.storeTermPayloads());
     newType.setNumericType(FieldType.NumericType.INT);
     newType.setNumericPrecisionStep(DEFAULT_PRECISION_STEP);
 
@@ -405,30 +397,6 @@ public class EnumField extends PrimitiveFieldType {
 
     f.setBoost(boost);
     return f;
-  }
-
-  /**
-   * {@inheritDoc}
-   */
-  @Override
-  public List<IndexableField> createFields(SchemaField sf, Object value, float boost) {
-    if (sf.hasDocValues()) {
-      List<IndexableField> fields = new ArrayList<>();
-      final IndexableField field = createField(sf, value, boost);
-      fields.add(field);
-
-      if (sf.multiValued()) {
-        BytesRefBuilder bytes = new BytesRefBuilder();
-        readableToIndexed(stringValueToIntValue(value.toString()).toString(), bytes);
-        fields.add(new SortedSetDocValuesField(sf.getName(), bytes.toBytesRef()));
-      } else {
-        final long bits = field.numericValue().intValue();
-        fields.add(new NumericDocValuesField(sf.getName(), bits));
-      }
-      return fields;
-    } else {
-      return Collections.singletonList(createField(sf, value, boost));
-    }
   }
 
   /**

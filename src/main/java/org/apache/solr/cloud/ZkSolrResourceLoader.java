@@ -17,21 +17,20 @@ package org.apache.solr.cloud;
  * limitations under the License.
  */
 
-import org.apache.solr.common.SolrException;
-import org.apache.solr.common.SolrException.ErrorCode;
-import org.apache.solr.common.cloud.ZkConfigManager;
-import org.apache.solr.common.cloud.ZooKeeperException;
-import org.apache.solr.core.SolrResourceLoader;
-import org.apache.solr.schema.ZkIndexSchemaReader;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.data.Stat;
-
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 import java.util.Properties;
+
+import org.apache.solr.common.SolrException;
+import org.apache.solr.common.SolrException.ErrorCode;
+import org.apache.solr.common.cloud.ZooKeeperException;
+import org.apache.solr.core.SolrResourceLoader;
+import org.apache.solr.schema.ZkIndexSchemaReader;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.data.Stat;
 
 /**
  * ResourceLoader that works with ZooKeeper.
@@ -47,7 +46,7 @@ public class ZkSolrResourceLoader extends SolrResourceLoader {
       ZkController zooKeeperController) {
     super(instanceDir);
     this.zkController = zooKeeperController;
-    configSetZkPath = ZkConfigManager.CONFIGS_ZKNODE + "/" + configSet;
+    configSetZkPath = ZkController.CONFIGS_ZKNODE + "/" + configSet;
     zkController.watchZKConfDir(configSetZkPath);
   }
 
@@ -57,12 +56,13 @@ public class ZkSolrResourceLoader extends SolrResourceLoader {
    * will delegate to the context classloader when possible,
    * otherwise it will attempt to resolve resources using any jar files found in
    * the "lib/" directory in the specified instance directory.
+   * <p>
    */
   public ZkSolrResourceLoader(String instanceDir, String configSet, ClassLoader parent,
       Properties coreProperties, ZkController zooKeeperController) {
     super(instanceDir, parent, coreProperties);
     this.zkController = zooKeeperController;
-    configSetZkPath = ZkConfigManager.CONFIGS_ZKNODE + "/" + configSet;
+    configSetZkPath = ZkController.CONFIGS_ZKNODE + "/" + configSet;
     zkController.watchZKConfDir(configSetZkPath);
   }
 

@@ -17,21 +17,6 @@
 
 package org.apache.solr.handler.component;
 
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-
 import org.apache.lucene.index.IndexReaderContext;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.ReaderUtil;
@@ -109,6 +94,20 @@ import org.apache.solr.util.SolrPluginUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * TODO!
@@ -216,16 +215,6 @@ public class QueryComponent extends SearchComponent
 
     if (params.getBool(GroupParams.GROUP, false)) {
       prepareGrouping(rb);
-    } else {
-      //Validate only in case of non-grouping search.
-      if(rb.getSortSpec().getCount() < 0) {
-        throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "'rows' parameter cannot be negative");
-      }
-    }
-
-    //Input validation.
-    if (rb.getQueryCommand().getOffset() < 0) {
-      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "'start' parameter cannot be negative");
     }
   }
 
@@ -314,6 +303,10 @@ public class QueryComponent extends SearchComponent
     if ((purpose & ShardRequest.PURPOSE_SET_TERM_STATS) != 0) {
       // retrieve from request and update local cache
       statsCache.receiveGlobalStats(req);
+    }
+
+    if (rb.getQueryCommand().getOffset() < 0) {
+      throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, "'start' parameter cannot be negative");
     }
 
     // -1 as flag if not set.
@@ -888,40 +881,30 @@ public class QueryComponent extends SearchComponent
 
     sreq.params.set(ResponseBuilder.FIELD_SORT_VALUES,"true");
 
+    // TODO: should this really sendGlobalDfs if just includeScore?
+    if ( (rb.getFieldFlags() & SolrIndexSearcher.GET_SCORES)!=0 || rb.getSortSpec().includesScore()) {
+      sreq.params.set(CommonParams.FL, rb.req.getSchema().getUniqueKeyField().getName() + ",score");
+      StatsCache statsCache = rb.req.getCore().getStatsCache();
+      statsCache.sendGlobalStats(rb, sreq);
+    }
     boolean shardQueryIncludeScore = (rb.getFieldFlags() & SolrIndexSearcher.GET_SCORES) != 0 || rb.getSortSpec().includesScore();
-    StringBuilder additionalFL = new StringBuilder();
-    boolean additionalAdded = false;
-    if (distribSinglePass)  {
+    if (distribSinglePass) {
       String[] fls = rb.req.getParams().getParams(CommonParams.FL);
       if (fls != null && fls.length > 0 && (fls.length != 1 || !fls[0].isEmpty())) {
         // If the outer request contains actual FL's use them...
         sreq.params.set(CommonParams.FL, fls);
-        if (!fields.wantsField(keyFieldName))  {
-          additionalAdded = addFL(additionalFL, keyFieldName, additionalAdded);
-        }
       } else {
         // ... else we need to explicitly ask for all fields, because we are going to add
         // additional fields below
         sreq.params.set(CommonParams.FL, "*");
       }
-      if (!fields.wantsScore() && shardQueryIncludeScore) {
-        additionalAdded = addFL(additionalFL, "score", additionalAdded);
-      }
-    } else {
-      // reset so that only unique key is requested in shard requests
-      sreq.params.set(CommonParams.FL, rb.req.getSchema().getUniqueKeyField().getName());
-      if (shardQueryIncludeScore) {
-        additionalAdded = addFL(additionalFL, "score", additionalAdded);
-      }
     }
-
-    // TODO: should this really sendGlobalDfs if just includeScore?
-
-    if (shardQueryIncludeScore) {
-      StatsCache statsCache = rb.req.getCore().getStatsCache();
-      statsCache.sendGlobalStats(rb, sreq);
-    }
-
+    StringBuilder additionalFL = new StringBuilder();
+    boolean additionalAdded = false;
+    if (!distribSinglePass || !fields.wantsField(keyFieldName)) 
+      additionalAdded = addFL(additionalFL, keyFieldName, additionalAdded);
+    if ((!distribSinglePass || !fields.wantsScore()) && shardQueryIncludeScore) 
+      additionalAdded = addFL(additionalFL, "score", additionalAdded);
     if (additionalAdded) sreq.params.add(CommonParams.FL, additionalFL.toString());
 
     rb.addRequest(this, sreq);

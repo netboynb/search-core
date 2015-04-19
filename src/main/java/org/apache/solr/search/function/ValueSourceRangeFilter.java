@@ -98,7 +98,7 @@ public class ValueSourceRangeFilter extends SolrFilter {
   }
 
   @Override
-  public String toString(String field) {
+  public String toString() {
     StringBuilder sb = new StringBuilder();
     sb.append("frange(");
     sb.append(valueSource);

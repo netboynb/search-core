@@ -11,18 +11,13 @@ import org.apache.log4j.spi.LoggingEvent;
 import org.apache.log4j.spi.ThrowableInformation;
 import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
-import org.apache.solr.common.StringUtils;
+import org.apache.solr.common.cloud.ClusterState;
+import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.Replica;
+import org.apache.solr.common.cloud.Slice;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestInfo;
-import org.slf4j.MDC;
-
-import static org.apache.solr.common.cloud.ZkStateReader.COLLECTION_PROP;
-import static org.apache.solr.common.cloud.ZkStateReader.CORE_NAME_PROP;
-import static org.apache.solr.common.cloud.ZkStateReader.NODE_NAME_PROP;
-import static org.apache.solr.common.cloud.ZkStateReader.REPLICA_PROP;
-import static org.apache.solr.common.cloud.ZkStateReader.SHARD_ID_PROP;
 
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
@@ -112,7 +107,7 @@ public class SolrLogLayout extends Layout {
     sb.append(" T");
     sb.append(th.getId());
   }
-
+  
   @Override
   public String format(LoggingEvent event) {
     return _format(event);
@@ -158,8 +153,11 @@ public class SolrLogLayout extends Layout {
         sb.append(" name=" + core.getName());
         sb.append(" " + core);
       }
-
-      zkController = core.getCoreDescriptor().getCoreContainer().getZkController();
+      
+      if (zkController == null) {
+        zkController = core.getCoreDescriptor().getCoreContainer()
+            .getZkController();
+      }
       if (zkController != null) {
         if (info.url == null) {
           info.url = zkController.getBaseUrl() + "/" + core.getName();
@@ -180,24 +178,26 @@ public class SolrLogLayout extends Layout {
     
     if (sb.length() > 0) sb.append('\n');
     sb.append(timeFromStart);
-
+    
     // sb.append("\nL").append(record.getSequenceNumber()); // log number is
     // useful for sequencing when looking at multiple parts of a log file, but
     // ms since start should be fine.
     appendThread(sb, event);
-
-    appendMDC(sb);
-
-    // todo: should be able to get port from core container for non zk tests
-
+    
     if (info != null) {
       sb.append(' ').append(info.shortId); // core
     }
-
+    if (zkController != null) {
+      sb.append(" P").append(zkController.getHostPort()); // todo: should be
+                                                          // able to get this
+                                                          // from core container
+                                                          // for non zk tests
+    }
+    
     if (shortClassName.length() > 0) {
       sb.append(' ').append(shortClassName);
     }
-
+    
     if (event.getLevel() != Level.INFO) {
       sb.append(' ').append(event.getLevel());
     }
@@ -360,24 +360,5 @@ public class SolrLogLayout extends Layout {
   @Override
   public boolean ignoresThrowable() {
     return false;
-  }
-
-
-  private void appendMDC(StringBuilder sb) {
-    if (!StringUtils.isEmpty(MDC.get(NODE_NAME_PROP)))  {
-      sb.append(" N:").append(MDC.get(NODE_NAME_PROP));
-    }
-    if (!StringUtils.isEmpty(MDC.get(COLLECTION_PROP)))  {
-      sb.append(" C:").append(MDC.get(COLLECTION_PROP));
-    }
-    if (!StringUtils.isEmpty(MDC.get(SHARD_ID_PROP))) {
-      sb.append(" S:").append(MDC.get(SHARD_ID_PROP));
-    }
-    if (!StringUtils.isEmpty(MDC.get(REPLICA_PROP))) {
-      sb.append(" R:").append(MDC.get(REPLICA_PROP));
-    }
-    if (!StringUtils.isEmpty(MDC.get(CORE_NAME_PROP))) {
-      sb.append(" c:").append(MDC.get(CORE_NAME_PROP));
-    }
   }
 }

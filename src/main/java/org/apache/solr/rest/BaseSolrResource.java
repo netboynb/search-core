@@ -16,11 +16,6 @@ package org.apache.solr.rest;
  * limitations under the License.
  */
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
-
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.util.NamedList;
@@ -41,7 +36,11 @@ import org.restlet.resource.ResourceException;
 import org.restlet.resource.ServerResource;
 import org.slf4j.Logger;
 
-import static org.apache.solr.common.params.CommonParams.JSON;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
+
 
 /**
  * Base class of all Solr Restlet server resource classes.
@@ -74,7 +73,7 @@ public abstract class BaseSolrResource extends ServerResource {
    * from the SolrRequestInfo thread local, then gets the SolrCore
    * and IndexSchema and sets up the response.
    * writer.
-   * <p>
+   * <p/>
    * If an error occurs during initialization, setExisting(false) is
    * called and an error status code and message is set; in this case,
    * Restlet will not continue servicing the request (by calling the
@@ -104,7 +103,7 @@ public abstract class BaseSolrResource extends ServerResource {
             schema = solrRequest.getSchema();
             String responseWriterName = solrRequest.getParams().get(CommonParams.WT);
             if (null == responseWriterName) {
-              responseWriterName = JSON; // Default to json writer
+              responseWriterName = "json"; // Default to json writer
             }
             String indent = solrRequest.getParams().get("indent");
             if (null == indent || ! ("off".equals(indent) || "false".equals(indent))) {

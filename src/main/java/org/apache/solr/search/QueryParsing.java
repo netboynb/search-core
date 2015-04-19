@@ -569,6 +569,7 @@ public class QueryParsing {
   /**
    * Formats a Query for debugging, using the IndexSchema to make
    * complex field types readable.
+   * <p/>
    * <p>
    * The benefit of using this method instead of calling
    * <code>Query.toString</code> directly is that it knows about the data
@@ -593,9 +594,9 @@ public class QueryParsing {
    * <b>Note: This API is experimental and may change in non backward-compatible ways in the future</b>
    */
   public static class StrParser {
-    public String val;
-    public int pos;
-    public int end;
+    String val;
+    int pos;
+    int end;
 
     public StrParser(String val) {
       this(val, 0, val.length());
@@ -607,19 +608,19 @@ public class QueryParsing {
       this.end = end;
     }
 
-    public void eatws() {
+    void eatws() {
       while (pos < end && Character.isWhitespace(val.charAt(pos))) pos++;
     }
 
-    public char ch() {
+    char ch() {
       return pos < end ? val.charAt(pos) : 0;
     }
 
-    public void skip(int nChars) {
+    void skip(int nChars) {
       pos = Math.max(pos + nChars, end);
     }
 
-    public boolean opt(String s) {
+    boolean opt(String s) {
       eatws();
       int slen = s.length();
       if (val.regionMatches(pos, s, 0, slen)) {
@@ -629,7 +630,7 @@ public class QueryParsing {
       return false;
     }
 
-    public boolean opt(char ch) {
+    boolean opt(char ch) {
       eatws();
       if (pos < end && val.charAt(pos) == ch) {
         pos++;
@@ -639,7 +640,7 @@ public class QueryParsing {
     }
 
 
-    public void expect(String s) throws SyntaxError {
+    void expect(String s) throws SyntaxError {
       eatws();
       int slen = s.length();
       if (val.regionMatches(pos, s, 0, slen)) {
@@ -649,7 +650,7 @@ public class QueryParsing {
       }
     }
 
-    public float getFloat() {
+    float getFloat() {
       eatws();
       char[] arr = new char[end - pos];
       int i;
@@ -669,7 +670,7 @@ public class QueryParsing {
       return Float.parseFloat(new String(arr, 0, i));
     }
 
-    public Number getNumber() {
+    Number getNumber() {
       eatws();
       int start = pos;
       boolean flt = false;
@@ -694,7 +695,7 @@ public class QueryParsing {
       }
     }
 
-    public double getDouble() {
+    double getDouble() {
       eatws();
       char[] arr = new char[end - pos];
       int i;
@@ -714,7 +715,7 @@ public class QueryParsing {
       return Double.parseDouble(new String(arr, 0, i));
     }
 
-    public int getInt() {
+    int getInt() {
       eatws();
       char[] arr = new char[end - pos];
       int i;
@@ -734,11 +735,11 @@ public class QueryParsing {
     }
 
 
-    public String getId() throws SyntaxError {
+    String getId() throws SyntaxError {
       return getId("Expected identifier");
     }
 
-    public String getId(String errMessage) throws SyntaxError {
+    String getId(String errMessage) throws SyntaxError {
       eatws();
       int id_start = pos;
       char ch;
@@ -787,7 +788,7 @@ public class QueryParsing {
      * Skips leading whitespace and returns whatever sequence of non 
      * whitespace it can find (or hte empty string)
      */
-    public String getSimpleString() {
+    String getSimpleString() {
       eatws();
       int startPos = pos;
       char ch;
@@ -804,7 +805,7 @@ public class QueryParsing {
      * sort direction. (True is desc, False is asc).  
      * Position is advanced to after the comma (or end) when result is non null 
      */
-    public Boolean getSortDirection() throws SyntaxError {
+    Boolean getSortDirection() throws SyntaxError {
       final int startPos = pos;
       final String order = getId(null);
 
@@ -835,7 +836,7 @@ public class QueryParsing {
     }
 
     // return null if not a string
-    public String getQuotedString() throws SyntaxError {
+    String getQuotedString() throws SyntaxError {
       eatws();
       char delim = peekChar();
       if (!(delim == '\"' || delim == '\'')) {
@@ -888,13 +889,13 @@ public class QueryParsing {
     }
 
     // next non-whitespace char
-    public char peek() {
+    char peek() {
       eatws();
       return pos < end ? val.charAt(pos) : 0;
     }
 
     // next char
-    public char peekChar() {
+    char peekChar() {
       return pos < end ? val.charAt(pos) : 0;
     }
 

@@ -18,18 +18,15 @@
 package org.apache.solr.search;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
 
-import com.carrotsearch.hppc.FloatArrayList;
 import com.carrotsearch.hppc.IntArrayList;
-import com.carrotsearch.hppc.IntIntOpenHashMap;
 import com.carrotsearch.hppc.IntLongOpenHashMap;
-import com.carrotsearch.hppc.cursors.IntIntCursor;
 import com.carrotsearch.hppc.cursors.IntLongCursor;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.DocValuesType;
@@ -41,6 +38,9 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.MultiDocValues;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SortedDocValues;
+import org.apache.lucene.uninverting.UninvertingReader;
+import org.apache.lucene.util.ArrayUtil;
+import org.apache.lucene.util.LongValues;
 import org.apache.lucene.queries.function.FunctionQuery;
 import org.apache.lucene.queries.function.FunctionValues;
 import org.apache.lucene.queries.function.ValueSource;
@@ -48,12 +48,9 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.Scorer;
-import org.apache.lucene.uninverting.UninvertingReader;
-import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
-import org.apache.lucene.util.LongValues;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.SolrParams;
@@ -63,10 +60,14 @@ import org.apache.solr.request.LocalSolrQueryRequest;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrRequestInfo;
 import org.apache.solr.schema.FieldType;
-import org.apache.solr.schema.StrField;
+import org.apache.solr.schema.TrieDoubleField;
 import org.apache.solr.schema.TrieFloatField;
 import org.apache.solr.schema.TrieIntField;
 import org.apache.solr.schema.TrieLongField;
+import org.apache.solr.schema.StrField;
+import com.carrotsearch.hppc.FloatArrayList;
+import com.carrotsearch.hppc.IntIntOpenHashMap;
+import com.carrotsearch.hppc.cursors.IntIntCursor;
 
 /**
 
@@ -74,32 +75,32 @@ import org.apache.solr.schema.TrieLongField;
  This is a high performance alternative to standard Solr
  field collapsing (with ngroups) when the number of distinct groups
  in the result set is high.
- <p>
+ <p/>
  Sample syntax:
- <p>
+ <p/>
  Collapse based on the highest scoring document:
- <p>
+ <p/>
 
  fq=(!collapse field=field_name}
 
- <p>
+ <p/>
  Collapse based on the min value of a numeric field:
- <p>
+ <p/>
  fq={!collapse field=field_name min=field_name}
- <p>
+ <p/>
  Collapse based on the max value of a numeric field:
- <p>
+ <p/>
  fq={!collapse field=field_name max=field_name}
- <p>
+ <p/>
  Collapse with a null policy:
- <p>
+ <p/>
  fq={!collapse field=field_name nullPolicy=nullPolicy}
- <p>
- There are three null policies: <br>
- ignore : removes docs with a null value in the collapse field (default).<br>
- expand : treats each doc with a null value in the collapse field as a separate group.<br>
+ <p/>
+ There are three null policies: <br/>
+ ignore : removes docs with a null value in the collapse field (default).<br/>
+ expand : treats each doc with a null value in the collapse field as a separate group.<br/>
  collapse : collapses all docs with a null value into a single group using either highest score, or min/max.
- <p>
+ <p/>
  The CollapsingQParserPlugin fully supports the QueryElevationComponent
  **/
 

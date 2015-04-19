@@ -16,21 +16,14 @@
  */
 package org.apache.solr.core;
 
-import javax.management.Attribute;
-import javax.management.AttributeList;
-import javax.management.AttributeNotFoundException;
-import javax.management.DynamicMBean;
-import javax.management.InvalidAttributeValueException;
-import javax.management.MBeanAttributeInfo;
-import javax.management.MBeanException;
-import javax.management.MBeanInfo;
-import javax.management.MBeanServer;
-import javax.management.MBeanServerFactory;
-import javax.management.MalformedObjectNameException;
-import javax.management.ObjectName;
-import javax.management.Query;
-import javax.management.QueryExp;
-import javax.management.ReflectionException;
+import org.apache.lucene.store.AlreadyClosedException;
+import org.apache.solr.common.SolrException;
+import org.apache.solr.common.util.NamedList;
+import org.apache.solr.core.SolrConfig.JmxConfiguration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.management.*;
 import javax.management.openmbean.OpenMBeanAttributeInfoSupport;
 import javax.management.openmbean.OpenType;
 import javax.management.openmbean.SimpleType;
@@ -39,28 +32,15 @@ import javax.management.remote.JMXConnectorServerFactory;
 import javax.management.remote.JMXServiceURL;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Hashtable;
-import java.util.List;
-import java.util.Locale;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-
-import org.apache.lucene.store.AlreadyClosedException;
-import org.apache.solr.common.SolrException;
-import org.apache.solr.common.util.NamedList;
-import org.apache.solr.core.SolrConfig.JmxConfiguration;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import static org.apache.solr.common.params.CommonParams.NAME;
 
 /**
  * <p>
  * Responsible for finding (or creating) a MBeanServer from given configuration
  * and registering all SolrInfoMBean objects with JMX.
  * </p>
+ * <p/>
  * <p>
  * Please see http://wiki.apache.org/solr/SolrJmx for instructions on usage and configuration
  * </p>
@@ -138,20 +118,13 @@ public class JmxMonitoredMap<K, V> extends
   public void clear() {
     if (server != null) {
       QueryExp exp = Query.eq(Query.attr("coreHashCode"), Query.value(coreHashCode));
-      
-      Set<ObjectName> objectNames = null;
-      try {
-        objectNames = server.queryNames(null, exp);
-      } catch (Exception e) {
-        LOG.warn("Exception querying for mbeans", e);
-      }
-      
+      Set<ObjectName> objectNames = server.queryNames(null, exp);
       if (objectNames != null)  {
         for (ObjectName name : objectNames) {
           try {
             server.unregisterMBean(name);
           } catch (Exception e) {
-            LOG.warn("Exception un-registering mbean {}", name, e);
+            LOG.error("Exception un-registering mbean {}", name, e);
           }
         }
       }
@@ -260,7 +233,7 @@ public class JmxMonitoredMap<K, V> extends
       staticStats = new HashSet<>();
 
       // For which getters are already available in SolrInfoMBean
-      staticStats.add(NAME);
+      staticStats.add("name");
       staticStats.add("version");
       staticStats.add("description");
       staticStats.add("category");

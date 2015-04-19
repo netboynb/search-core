@@ -17,20 +17,14 @@ package org.apache.solr.core;
  * limitations under the License.
  */
 
+import org.apache.solr.common.util.NamedList;
+import org.apache.solr.common.util.StrUtils;
+
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
-import org.apache.solr.common.util.NamedList;
-import org.apache.solr.common.util.StrUtils;
-
-import static org.apache.solr.common.params.CommonParams.NAME;
-import static org.apache.solr.common.params.CommonParams.PATH;
-import static org.apache.solr.core.PluginInfo.APPENDS;
-import static org.apache.solr.core.PluginInfo.DEFAULTS;
-import static org.apache.solr.core.PluginInfo.INVARIANTS;
 
 /**
  * An Object which represents a {@code <initParams>} tag
@@ -39,49 +33,49 @@ public class InitParams {
   public static final String TYPE = "initParams";
   public final String name;
   public final Set<String> paths;
-  public final NamedList defaults, invariants, appends;
+  public final NamedList defaults,invariants,appends;
 
   public InitParams(PluginInfo p) {
-    this.name = p.attributes.get(NAME);
+    this.name = p.attributes.get("name");
     Set<String> paths = null;
-    String pathStr = p.attributes.get(PATH);
-    if (pathStr != null) {
+    String pathStr = p.attributes.get("path");
+    if(pathStr!=null) {
       paths = Collections.unmodifiableSet(new HashSet<>(StrUtils.splitSmart(pathStr, ',')));
     }
     this.paths = paths;
-    NamedList nl = (NamedList) p.initArgs.get(DEFAULTS);
-    defaults = nl == null ? null : nl.getImmutableCopy();
-    nl = (NamedList) p.initArgs.get(INVARIANTS);
-    invariants = nl == null ? null : nl.getImmutableCopy();
-    nl = (NamedList) p.initArgs.get(APPENDS);
-    appends = nl == null ? null : nl.getImmutableCopy();
+    NamedList nl = (NamedList) p.initArgs.get(PluginInfo.DEFAULTS);
+    defaults = nl == null ? null: nl.getImmutableCopy();
+    nl = (NamedList) p.initArgs.get(PluginInfo.INVARIANTS);
+    invariants = nl == null ? null: nl.getImmutableCopy();
+    nl = (NamedList) p.initArgs.get(PluginInfo.APPENDS);
+    appends = nl == null ? null: nl.getImmutableCopy();
   }
 
   public boolean matchPath(String name) {
-    if (paths == null) return false;
-    if (paths.contains(name)) return true;
+    if(paths == null) return false;
+    if(paths.contains(name)) return true;
 
     for (String path : paths) {
-      if (matchPath(path, name)) return true;
+      if(matchPath(path,name)) return true;
     }
 
     return false;
   }
 
-  private static boolean matchPath(String path, String name) {
+  private static boolean matchPath(String path, String name){
     List<String> pathSplit = StrUtils.splitSmart(path, '/');
     List<String> nameSplit = StrUtils.splitSmart(name, '/');
     int i = 0;
-    for (; i < nameSplit.size(); i++) {
+    for (;i < nameSplit.size(); i++) {
       String s = nameSplit.get(i);
-      String ps = pathSplit.size() > i ? pathSplit.get(i) : null;
-      if (ps == null) return false;
-      if (s.equals(ps)) continue;
-      if ("*".equals(ps) && nameSplit.size() == i + 1) return true;
-      if ("**".equals(ps)) return true;
+      String ps = pathSplit.size()>i ?  pathSplit.get(i) :null;
+      if(ps == null) return false;
+      if(s.equals(ps)) continue;
+      if("*".equals(ps) && nameSplit.size()==i+1) return true;
+      if("**".equals(ps)) return true;
       return false;
     }
-    String ps = pathSplit.size() > i ? pathSplit.get(i) : null;
+    String ps = pathSplit.size()>i ?  pathSplit.get(i) :null;
     return "*".equals(ps) || "**".equals(ps);
 
   }
@@ -89,29 +83,29 @@ public class InitParams {
   public void apply(PluginInfo info) {
     if (!info.isFromSolrConfig()) {
       //if this is a component implicitly defined in code it should be overridden by initPrams
-      merge(defaults, (NamedList) info.initArgs.get(DEFAULTS), info.initArgs, DEFAULTS, false);
+      merge(defaults, (NamedList) info.initArgs.get(PluginInfo.DEFAULTS) ,info.initArgs, PluginInfo.DEFAULTS, false);
     } else {
       //if the args is initialized from solrconfig.xml inside the requesthHandler it should be taking precedence over  initParams
-      merge((NamedList) info.initArgs.get(DEFAULTS), defaults, info.initArgs, DEFAULTS, false);
+      merge( (NamedList) info.initArgs.get(PluginInfo.DEFAULTS), defaults,info.initArgs, PluginInfo.DEFAULTS, false);
     }
-    merge((NamedList) info.initArgs.get(INVARIANTS), invariants, info.initArgs, INVARIANTS, false);
-    merge((NamedList) info.initArgs.get(APPENDS), appends, info.initArgs, APPENDS, true);
+    merge((NamedList) info.initArgs.get(PluginInfo.INVARIANTS), invariants, info.initArgs, PluginInfo.INVARIANTS, false);
+    merge((NamedList) info.initArgs.get(PluginInfo.APPENDS), appends, info.initArgs, PluginInfo.APPENDS, true);
   }
 
-  private static void merge(NamedList first, NamedList second, NamedList sink, String name, boolean appends) {
-    if (first == null && second == null) return;
-    if (first == null) first = new NamedList();
+  private static  void merge(NamedList first, NamedList second, NamedList sink, String name, boolean appends) {
+    if(first == null && second == null) return;
+    if(first == null) first = new NamedList();
     NamedList nl = first.clone();
-    if (appends) {
-      if (second != null) nl.addAll(second);
+    if(appends) {
+      if(second!=null) nl.addAll(second);
     } else {
       Set<String> a = new HashSet<>();
       Set<String> b = new HashSet<>();
-      for (Object o : first) {
-        Map.Entry<String, Object> e = (Map.Entry) o;
-        a.add(e.getKey());
+      for (Object o : first)    {
+        Map.Entry<String,Object> e = (Map.Entry) o;
+        a.add(e.getKey() );
       }
-      if (second != null) {
+      if(second!=null) {
         for (Object o : second) {
           Map.Entry<String, Object> e = (Map.Entry) o;
           b.add(e.getKey());
@@ -122,10 +116,10 @@ public class InitParams {
         for (Object v : second.getAll(s)) nl.add(s, v);
       }
     }
-    if (sink.indexOf(name, 0) > -1) {
+    if(sink.indexOf(name,0) >-1) {
       sink.setVal(sink.indexOf(name, 0), nl);
     } else {
-      sink.add(name, nl);
+      sink.add(name,nl);
     }
   }
 }
